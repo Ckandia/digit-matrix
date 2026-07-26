@@ -20,6 +20,7 @@ import { localize } from '@deriv-com/translations';
 import Audio from '../components/audio';
 import BlocklyLoading from '../components/blockly-loading';
 import BotStopped from '../components/bot-stopped';
+import BotBuilder from '../pages/bot-builder';
 import Main from '../pages/main';
 import './app.scss';
 import 'react-toastify/dist/ReactToastify.css';
@@ -161,6 +162,10 @@ const AppContent = observer(() => {
 
     if (common?.error) return null;
 
+    // Check current path to render the correct active view
+    const currentPath = window.location.pathname;
+    const isBotBuilder = currentPath.includes('bot-builder');
+
     return (
         <React.Fragment>
             {PreviewBranding && (
@@ -176,7 +181,7 @@ const AppContent = observer(() => {
                         <BlocklyLoading />
                         <div className='bot-dashboard bot' data-testid='dt_bot_dashboard'>
                             <Audio />
-                            <Main />
+                            {isBotBuilder ? <BotBuilder /> : <Main />}
                             <BotStopped />
                             <TransactionDetailsModal />
                             <ToastContainer limit={3} draggable={false} />
