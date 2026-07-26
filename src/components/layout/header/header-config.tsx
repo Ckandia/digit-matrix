@@ -1,10 +1,11 @@
+import React from 'react';
 import { localize } from '@deriv-com/translations';
 import {
     LegacyHelpCentreIcon,
     LegacyChartsIcon,
     LegacyBookmark1pxIcon,
     LegacyGuide1pxIcon,
-    LegacyToolboxIcon, // Or any other icon of your choice
+    LegacyToolboxIcon,
 } from '@deriv/quill-icons/Legacy';
 
 export const MenuItems = [
@@ -36,7 +37,6 @@ export const MenuItems = [
         link_to: '/tutorials',
         to: '/tutorials',
     },
-    // 👉 Add your Bulk Trader tab here
     {
         id: 'dt_bulk_trader_tab',
         icon: <LegacyToolboxIcon iconSize='sm' />,
