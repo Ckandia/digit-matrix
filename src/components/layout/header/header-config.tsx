@@ -12,7 +12,7 @@ import {
     LabelPairedChartLineBoldIcon, 
     LabelPairedBookmarkBoldIcon, 
     LabelPairedBookOpenBoldIcon 
-} from '@deriv-com/quill-icons/LabelPaired';
+} from '@deriv/quill-icons';
 
 export type PlatformsConfig = {
     active: boolean;
