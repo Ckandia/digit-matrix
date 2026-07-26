@@ -1,7 +1,11 @@
+// ========================================
+// MENU ITEMS COMPONENT
+// ========================================
+
 import { observer } from 'mobx-react-lite';
 import { NavLink } from 'react-router-dom';
 import { Text } from '@deriv-com/ui';
-import { MenuItems as MenuItemsConfigList, TradershubLink as TradershubConfig } from './header-config';
+import { MenuItems as MenuItemsConfigList, TradershubLink as TradershubConfig } from '../header-config';
 
 export const MenuItems = observer(() => {
     return (
