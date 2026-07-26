@@ -56,6 +56,10 @@ const router = createBrowserRouter(
         >
             {/* All child routes will be passed as children to Layout */}
             <Route index element={<AppRoot />} />
+            <Route path='dashboard' element={<AppRoot />} />
+            <Route path='bot-builder' element={<AppRoot />} />
+            <Route path='charts' element={<AppRoot />} />
+            <Route path='tutorials' element={<AppRoot />} />
             {/* App Builder embeds the template at /preview — render the same app shell */}
             <Route path='preview' element={<AppRoot />} />
         </Route>
