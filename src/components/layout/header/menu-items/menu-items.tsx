@@ -1,60 +1,47 @@
-// ========================================
-// MENU ITEMS PLACEHOLDER FOR WHITE-LABELING
-// ========================================
-//
-// This component has been simplified for white-labeling.
-// Third-party developers can add custom menu items here.
-//
-// EXAMPLE USAGE:
-// --------------
-// import { observer } from 'mobx-react-lite';
-// import { useStore } from '@/hooks/useStore';
-// import { useTranslations } from '@deriv-com/translations';
-// import { MenuItem, Text } from '@deriv-com/ui';
-//
-// export const MenuItems = observer(() => {
-//     const { localize } = useTranslations();
-//     const store = useStore();
-//     const is_logged_in = store?.client?.is_logged_in ?? false;
-//
-//     if (!is_logged_in) return null;
-//
-//     return (
-//         <>
-//             <MenuItem
-//                 as='a'
-//                 className='app-header__menu'
-//                 href='/your-page'
-//                 leftComponent={YourIcon}
-//             >
-//                 <Text>{localize('Your Menu Item')}</Text>
-//             </MenuItem>
-//         </>
-//     );
-// });
-//
-// For mobile menu items, see:
-// src/components/layout/header/mobile-menu/use-mobile-menu-config.tsx
-
 import { observer } from 'mobx-react-lite';
+import { NavLink } from 'react-router-dom';
+import { Text } from '@deriv-com/ui';
+import { MenuItems as MenuItemsConfigList, TradershubLink as TradershubConfig } from './header-config';
 
 export const MenuItems = observer(() => {
-    // No menu items by default - add your custom menu items here
-    return null;
+    return (
+        <div className='app-header__menu-items' style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {MenuItemsConfigList.map((item, index) => (
+                <NavLink
+                    key={index}
+                    to={item.href}
+                    className={({ isActive }) =>
+                        `app-header__menu-item ${isActive ? 'app-header__menu-item--active' : ''}`
+                    }
+                    style={({ isActive }) => ({
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 12px',
+                        borderRadius: '8px',
+                        textDecoration: 'none',
+                        color: isActive ? 'var(--text-prominent)' : 'var(--text-general)',
+                        backgroundColor: isActive ? 'var(--general-active)' : 'transparent',
+                    })}
+                >
+                    {item.icon}
+                    <Text size='sm' weight={isActive ? 'bold' : 'normal'}>
+                        {item.label}
+                    </Text>
+                </NavLink>
+            ))}
+        </div>
+    );
 });
 
 export const TradershubLink = observer(() => {
-    // No default Traders Hub link - add your custom navigation here if needed
     return null;
 });
 
-// Create a namespace for MenuItems to include TradershubLink
 type MenuItemsType = typeof MenuItems & {
     TradershubLink: typeof TradershubLink;
 };
 
-// Assign TradershubLink to MenuItems
 (MenuItems as MenuItemsType).TradershubLink = TradershubLink;
 
 export default MenuItems as MenuItemsType;
-// [/AI]
