@@ -1,18 +1,18 @@
 import { ReactNode } from 'react';
 import { standalone_routes } from '@/components/shared';
-import { LegacyHomeNewIcon as TradershubLogo } from '@deriv/quill-icons/Legacy';
+import { 
+    LegacyHomeNewIcon as TradershubLogo,
+    LegacyDashboardIcon,
+    LegacyChartsIcon,
+    LegacyBookmarkIcon,
+    LegacyBookOpenIcon
+} from '@deriv/quill-icons/Legacy';
 import {
     DerivProductBrandLightDerivBotLogoWordmarkIcon as DerivBotLogo,
     DerivProductBrandLightDerivTraderLogoWordmarkIcon as DerivTraderLogo,
     PartnersProductBrandLightSmarttraderLogoWordmarkIcon as SmarttraderLogo,
 } from '@deriv/quill-icons/Logo';
 import { localize } from '@deriv-com/translations';
-import { 
-    LabelPairedGridColumnsBoldIcon, 
-    LabelPairedChartLineBoldIcon, 
-    LabelPairedBookmarkBoldIcon, 
-    LabelPairedBookOpenBoldIcon 
-} from '@deriv/quill-icons';
 
 export type PlatformsConfig = {
     active: boolean;
@@ -79,25 +79,25 @@ export const MenuItems: MenuItemsConfig[] = [
     {
         as: 'a',
         href: '/dashboard',
-        icon: <LabelPairedGridColumnsBoldIcon height={20} width={20} />,
+        icon: <LegacyDashboardIcon iconSize='sm' />,
         label: localize('Dashboard'),
     },
     {
         as: 'a',
         href: '/bot-builder',
-        icon: <LabelPairedChartLineBoldIcon height={20} width={20} />,
+        icon: <LegacyChartsIcon iconSize='sm' />,
         label: localize('Bot Builder'),
     },
     {
         as: 'a',
         href: '/charts',
-        icon: <LabelPairedBookmarkBoldIcon height={20} width={20} />,
+        icon: <LegacyBookmarkIcon iconSize='sm' />,
         label: localize('Charts'),
     },
     {
         as: 'a',
         href: '/tutorials',
-        icon: <LabelPairedBookOpenBoldIcon height={20} width={20} />,
+        icon: <LegacyBookOpenIcon iconSize='sm' />,
         label: localize('Tutorials'),
     },
 ];
