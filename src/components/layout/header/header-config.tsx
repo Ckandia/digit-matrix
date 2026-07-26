@@ -8,11 +8,11 @@ import {
 } from '@deriv/quill-icons/Logo';
 import { localize } from '@deriv-com/translations';
 import { 
-    LabelPairedGridDashboardBoldIcon, 
-    LabelPairedCpuBoldIcon, 
+    LabelPairedGridColumnsBoldIcon, 
     LabelPairedChartLineBoldIcon, 
+    LabelPairedBookmarkBoldIcon, 
     LabelPairedBookOpenBoldIcon 
-} from '@deriv/quill-icons/LabelPaired';
+} from '@deriv-com/quill-icons/LabelPaired';
 
 export type PlatformsConfig = {
     active: boolean;
@@ -79,19 +79,19 @@ export const MenuItems: MenuItemsConfig[] = [
     {
         as: 'a',
         href: '/dashboard',
-        icon: <LabelPairedGridDashboardBoldIcon height={20} width={20} />,
+        icon: <LabelPairedGridColumnsBoldIcon height={20} width={20} />,
         label: localize('Dashboard'),
     },
     {
         as: 'a',
         href: '/bot-builder',
-        icon: <LabelPairedCpuBoldIcon height={20} width={20} />,
+        icon: <LabelPairedChartLineBoldIcon height={20} width={20} />,
         label: localize('Bot Builder'),
     },
     {
         as: 'a',
         href: '/charts',
-        icon: <LabelPairedChartLineBoldIcon height={20} width={20} />,
+        icon: <LabelPairedBookmarkBoldIcon height={20} width={20} />,
         label: localize('Charts'),
     },
     {
