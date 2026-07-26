@@ -162,7 +162,6 @@ const AppContent = observer(() => {
 
     if (common?.error) return null;
 
-    // Check current path to render the correct active view
     const currentPath = window.location.pathname;
     const isBotBuilder = currentPath.includes('bot-builder');
 
@@ -181,7 +180,12 @@ const AppContent = observer(() => {
                         <BlocklyLoading />
                         <div className='bot-dashboard bot' data-testid='dt_bot_dashboard'>
                             <Audio />
-                            {isBotBuilder ? <BotBuilder /> : <Main />}
+                            <div style={{ display: isBotBuilder ? 'block' : 'none' }}>
+                                <BotBuilder />
+                            </div>
+                            <div style={{ display: !isBotBuilder ? 'block' : 'none' }}>
+                                <Main />
+                            </div>
                             <BotStopped />
                             <TransactionDetailsModal />
                             <ToastContainer limit={3} draggable={false} />
