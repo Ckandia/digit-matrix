@@ -7,6 +7,12 @@ import {
     PartnersProductBrandLightSmarttraderLogoWordmarkIcon as SmarttraderLogo,
 } from '@deriv/quill-icons/Logo';
 import { localize } from '@deriv-com/translations';
+import { 
+    LabelPairedGridDashboardBoldIcon, 
+    LabelPairedCpuBoldIcon, 
+    LabelPairedChartLineBoldIcon, 
+    LabelPairedBookOpenBoldIcon 
+} from '@deriv/quill-icons/LabelPaired';
 
 export type PlatformsConfig = {
     active: boolean;
@@ -29,7 +35,6 @@ export type TAccount = {
     currency: string;
     icon: React.ReactNode;
     isActive: boolean;
-
     isVirtual: boolean;
     loginid: string;
     token: string;
@@ -70,21 +75,29 @@ export const TRADERS_HUB_LINK_CONFIG = {
     label: 'Home',
 };
 
-// ========================================
-// MENU ITEMS CONFIGURATION PLACEHOLDER
-// ========================================
-//
-// Add your custom menu items here for the desktop header.
-//
-// EXAMPLE:
-// export const MenuItems: MenuItemsConfig[] = [
-//     {
-//         as: 'a',
-//         href: '/your-page',
-//         icon: <YourIcon />,
-//         label: localize('Your Menu Item'),
-//     },
-// ];
-//
-// Empty by default for white-labeling
-export const MenuItems: MenuItemsConfig[] = [];
+export const MenuItems: MenuItemsConfig[] = [
+    {
+        as: 'a',
+        href: '/dashboard',
+        icon: <LabelPairedGridDashboardBoldIcon height={20} width={20} />,
+        label: localize('Dashboard'),
+    },
+    {
+        as: 'a',
+        href: '/bot-builder',
+        icon: <LabelPairedCpuBoldIcon height={20} width={20} />,
+        label: localize('Bot Builder'),
+    },
+    {
+        as: 'a',
+        href: '/charts',
+        icon: <LabelPairedChartLineBoldIcon height={20} width={20} />,
+        label: localize('Charts'),
+    },
+    {
+        as: 'a',
+        href: '/tutorials',
+        icon: <LabelPairedBookOpenBoldIcon height={20} width={20} />,
+        label: localize('Tutorials'),
+    },
+];
