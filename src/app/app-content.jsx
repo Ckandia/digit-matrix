@@ -160,10 +160,17 @@ const AppContent = observer(() => {
         }
     }, [is_api_initialized, client.loginid]);
 
-    if (common?.error) return null;
-
     const currentPath = window.location.pathname;
     const isBotBuilder = currentPath.includes('bot-builder');
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+        }, 100);
+        return () => clearTimeout(timer);
+    }, [isBotBuilder]);
+
+    if (common?.error) return null;
 
     return (
         <React.Fragment>
@@ -180,10 +187,10 @@ const AppContent = observer(() => {
                         <BlocklyLoading />
                         <div className='bot-dashboard bot' data-testid='dt_bot_dashboard'>
                             <Audio />
-                            <div style={{ display: isBotBuilder ? 'block' : 'none' }}>
+                            <div style={{ display: isBotBuilder ? 'block' : 'none', height: '100%', width: '100%' }}>
                                 <BotBuilder />
                             </div>
-                            <div style={{ display: !isBotBuilder ? 'block' : 'none' }}>
+                            <div style={{ display: !isBotBuilder ? 'block' : 'none', height: '100%', width: '100%' }}>
                                 <Main />
                             </div>
                             <BotStopped />
