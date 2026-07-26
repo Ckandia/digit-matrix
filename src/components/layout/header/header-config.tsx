@@ -2,10 +2,10 @@ import { ReactNode } from 'react';
 import { standalone_routes } from '@/components/shared';
 import { 
     LegacyHomeNewIcon as TradershubLogo,
-    LegacyDashboardIcon,
     LegacyChartsIcon,
-    LegacyBookmarkIcon,
-    LegacyBookOpenIcon
+    LegacyBookmark1pxIcon,
+    LegacyGuide1pxIcon,
+    LegacyHelpCentreIcon
 } from '@deriv/quill-icons/Legacy';
 import {
     DerivProductBrandLightDerivBotLogoWordmarkIcon as DerivBotLogo,
@@ -79,7 +79,7 @@ export const MenuItems: MenuItemsConfig[] = [
     {
         as: 'a',
         href: '/dashboard',
-        icon: <LegacyDashboardIcon iconSize='sm' />,
+        icon: <LegacyHelpCentreIcon iconSize='sm' />,
         label: localize('Dashboard'),
     },
     {
@@ -91,13 +91,13 @@ export const MenuItems: MenuItemsConfig[] = [
     {
         as: 'a',
         href: '/charts',
-        icon: <LegacyBookmarkIcon iconSize='sm' />,
+        icon: <LegacyBookmark1pxIcon iconSize='sm' />,
         label: localize('Charts'),
     },
     {
         as: 'a',
         href: '/tutorials',
-        icon: <LegacyBookOpenIcon iconSize='sm' />,
+        icon: <LegacyGuide1pxIcon iconSize='sm' />,
         label: localize('Tutorials'),
     },
 ];
