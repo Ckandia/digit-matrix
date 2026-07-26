@@ -29,7 +29,7 @@ export const MenuItems = observer(() => {
                     })}
                 >
                     {item.icon}
-                    <Text size='sm' weight={isActive ? 'bold' : 'normal'}>
+                    <Text size='sm' weight={({ isActive }: { isActive: boolean }) => (isActive ? 'bold' : 'normal')}>
                         {item.label}
                     </Text>
                 </NavLink>
