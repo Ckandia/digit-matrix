@@ -1,12 +1,13 @@
 import React from 'react';
-import BulkTrader from '@/components/bulk-trader'; // Adjust path if needed depending on where your bulk-trader.tsx is located
+import { localize } from '@deriv-com/translations';
 
-const BulkTraderPage = () => {
+const BulkTrader = () => {
     return (
-        <div className='bulk-trader-page' style={{ padding: '24px', width: '100%', height: '100%' }}>
-            <BulkTrader />
+        <div className='bulk-trader'>
+            <h2>{localize('Bulk Trades')}</h2>
+            <p>{localize('Coming soon.')}</p>
         </div>
     );
 };
 
-export default BulkTraderPage;
+export default BulkTrader;
