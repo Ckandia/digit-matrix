@@ -1,8 +1,9 @@
-{
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+.bulk-trader-page {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    background-color: var(--brand-dark-grey, #0f172a);
+    color: var(--brand-white, #ffffff);
 }
