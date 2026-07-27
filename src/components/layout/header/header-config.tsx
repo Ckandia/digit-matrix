@@ -8,6 +8,23 @@ import {
     LegacyToolboxIcon,
 } from '@deriv/quill-icons/Legacy';
 
+export const platformsConfig = [
+    {
+        active: true,
+        description: localize('A fully customizable and automated trading platform.'),
+        href: 'https://deriv.com/deriv-bot',
+        icon: 'DerivBot',
+        title: localize('Deriv Bot'),
+    },
+];
+
+export const TradershubLinkConfig = {
+    id: 'traders-hub',
+    icon: 'LegacyTraderHub',
+    content: localize("Trader's Hub"),
+    link_to: 'https://app.deriv.com/account',
+};
+
 export const MenuItems = [
     {
         id: 'dt_dashboard_tab',
