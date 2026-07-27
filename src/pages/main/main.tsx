@@ -34,7 +34,6 @@ import {
     LabelPairedChartLineCaptionRegularIcon,
     LabelPairedObjectsColumnCaptionRegularIcon,
     LabelPairedPuzzlePieceTwoCaptionBoldIcon,
-    LabelPairedListUlCaptionRegularIcon,
 } from '@deriv/quill-icons/LabelPaired';
 import { LegacyGuide1pxIcon } from '@deriv/quill-icons/Legacy';
 import { Localize, localize } from '@deriv-com/translations';
@@ -457,11 +456,14 @@ const AppWrapper = observer(() => {
                             <div
                                 label={
                                     <>
-                                        <LabelPairedListUlCaptionRegularIcon
+                                        <svg
                                             height='24px'
                                             width='24px'
+                                            viewBox='0 0 24 24'
                                             fill='var(--text-general)'
-                                        />
+                                        >
+                                            <path d='M4 6h2v2H4zm0 5h2v2H4zm0 5h2v2H4zm4-10h12v2H8zm0 5h12v2H8zm0 5h12v2H8z' />
+                                        </svg>
                                         <Localize i18n_default_text='Bulk Trades' />
                                     </>
                                 }
