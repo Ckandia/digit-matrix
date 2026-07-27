@@ -22,6 +22,7 @@ import BlocklyLoading from '../components/blockly-loading';
 import BotStopped from '../components/bot-stopped';
 import BotBuilder from '../pages/bot-builder';
 import Main from '../pages/main';
+import BulkTraderPage from '../pages/bulk-trader';
 import './app.scss';
 import 'react-toastify/dist/ReactToastify.css';
 import '../components/bot-notification/bot-notification.scss';
@@ -160,6 +161,17 @@ const AppContent = observer(() => {
         }
     }, [is_api_initialized, client.loginid]);
 
+    const currentPath = window.location.pathname;
+    const isBotBuilder = currentPath.includes('bot-builder');
+    const isBulkTrader = currentPath.includes('bulk-trader');
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+        }, 100);
+        return () => clearTimeout(timer);
+    }, [isBotBuilder, isBulkTrader]);
+
     if (common?.error) return null;
 
     return (
@@ -177,8 +189,15 @@ const AppContent = observer(() => {
                         <BlocklyLoading />
                         <div className='bot-dashboard bot' data-testid='dt_bot_dashboard'>
                             <Audio />
-                            <Main />
-                            <BotBuilder />
+                            <div style={{ display: isBulkTrader ? 'block' : 'none', height: '100%', width: '100%' }}>
+                                <BulkTraderPage />
+                            </div>
+                            <div style={{ display: isBotBuilder && !isBulkTrader ? 'block' : 'none', height: '100%', width: '100%' }}>
+                                <BotBuilder />
+                            </div>
+                            <div style={{ display: !isBotBuilder && !isBulkTrader ? 'block' : 'none', height: '100%', width: '100%' }}>
+                                <Main />
+                            </div>
                             <BotStopped />
                             <TransactionDetailsModal />
                             <ToastContainer limit={3} draggable={false} />
