@@ -18,8 +18,9 @@ const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks }) => {
     const total = recentTicks.length || 1;
 
     return (
-        <div className="digit-display-wrapper">
-            <div className="digit-heatmap-bar">
+        <>
+            {/* Top Heatmap Circles */}
+            <div className="digit-heatmap-container">
                 {counts.map((count, digit) => {
                     const percentage = ((count / total) * 100).toFixed(2);
                     const isLatest = recentTicks.length > 0 && recentTicks[recentTicks.length - 1].digit === digit;
@@ -27,26 +28,29 @@ const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks }) => {
                     return (
                         <div 
                             key={digit} 
-                            className={`digit-stat-circle digit-${digit} ${isLatest ? 'active-latest' : ''}`}
+                            className={`digit-circle digit-${digit} ${isLatest ? 'active-latest' : ''}`}
                         >
-                            <span className="digit-number">{digit}</span>
-                            <span className="digit-percentage">{percentage}%</span>
+                            <span className="num">{digit}</span>
+                            <span className="pct">{percentage}%</span>
                         </div>
                     );
                 })}
             </div>
 
-            <div className="sequence-grid-container">
-                {recentTicks.map((tick, index) => (
-                    <div 
-                        key={`${tick.epoch}-${index}`} 
-                        className={`sequence-cell ${tick.type === 'E' ? 'even-cell' : 'odd-cell'}`}
-                    >
-                        {tick.type}
-                    </div>
-                ))}
+            {/* Sequence Grid (E and O) */}
+            <div className="sequence-grid-wrapper">
+                <div className="grid-container">
+                    {recentTicks.map((tick, index) => (
+                        <span 
+                            key={`${tick.epoch}-${index}`} 
+                            className={`seq-cell ${tick.type === 'E' ? 'E' : 'O'}`}
+                        >
+                            {tick.type}
+                        </span>
+                    ))}
+                </div>
             </div>
-        </div>
+        </>
     );
 };
 
