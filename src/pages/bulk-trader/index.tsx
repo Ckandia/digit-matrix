@@ -8,27 +8,26 @@ import './bulk-trader.scss';
 const BulkTrader = () => {
     const store = useStore();
     
-    const getOAuthToken = (): string | null => {
-        if (store?.client) {
-            const { client } = store;
-            if (client.token) return client.token;
-            if (client.loginid && client.accounts?.[client.loginid]?.token) {
-                return client.accounts[client.loginid].token;
-            }
-            if (typeof client.getToken === 'function') {
-                const t = client.getToken();
+    // Deep session search across all Deriv OAuth storage mechanisms
+    const getActiveAccountToken = (): string | null => {
+        try {
+            // 1. Direct MobX store check
+            if (store?.client?.token) return store.client.token;
+            if (typeof store?.client?.getToken === 'function') {
+                const t = store.client.getToken();
                 if (t) return t;
             }
-        }
 
-        try {
+            // 2. Active login ID lookup
             const activeLoginId = 
                 localStorage.getItem('active_loginid') || 
-                localStorage.getItem('active_account') ||
+                sessionStorage.getItem('active_loginid') ||
                 localStorage.getItem('client.active_loginid');
 
+            // 3. Search client.accounts in localStorage / sessionStorage
             const rawAccounts = 
                 localStorage.getItem('client.accounts') || 
+                sessionStorage.getItem('client.accounts') ||
                 localStorage.getItem('config.account_list') || 
                 '{}';
             
@@ -38,25 +37,42 @@ const BulkTrader = () => {
                 return accounts[activeLoginId].token;
             }
 
-            const keys = Object.keys(accounts);
-            if (keys.length > 0 && accounts[keys[0]]?.token) {
-                return accounts[keys[0]].token;
+            // Fallback: grab token from the first active account in list
+            const accountKeys = Object.keys(accounts);
+            if (accountKeys.length > 0 && accounts[accountKeys[0]]?.token) {
+                return accounts[accountKeys[0]].token;
+            }
+
+            // 4. Search tokenList format
+            const rawTokenList = localStorage.getItem('tokenList') || sessionStorage.getItem('tokenList');
+            if (rawTokenList) {
+                const tokenList = JSON.parse(rawTokenList);
+                if (Array.isArray(tokenList) && tokenList.length > 0) {
+                    const match = tokenList.find((item: any) => item.account === activeLoginId);
+                    return match?.token || tokenList[0]?.token || null;
+                }
             }
         } catch (e) {
-            console.error('Error parsing OAuth token:', e);
+            console.error('Error retrieving session token:', e);
         }
 
         return null;
     };
 
-    const [token, setToken] = useState<string | null>(getOAuthToken());
+    const [token, setToken] = useState<string | null>(getActiveAccountToken());
 
     useEffect(() => {
-        const detectedToken = getOAuthToken();
-        if (detectedToken && detectedToken !== token) {
-            setToken(detectedToken);
-        }
-    }, [store, store?.client?.loginid]);
+        const checkToken = () => {
+            const detectedToken = getActiveAccountToken();
+            if (detectedToken && detectedToken !== token) {
+                setToken(detectedToken);
+            }
+        };
+
+        checkToken();
+        const interval = setInterval(checkToken, 1000);
+        return () => clearInterval(interval);
+    }, [store, token]);
 
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
     const [strategy, setStrategy] = useState<string>('Even');
@@ -94,11 +110,11 @@ const BulkTrader = () => {
     return (
         <div className="bulk-trader-wrapper">
             <div className="top-grid">
-                {/* Left Controls */}
+                {/* Left Form Controls */}
                 <div className="control-card">
                     <div className="form-row">
                         <div className="form-group">
-                            <label>Market</label>
+                            <label>MARKET</label>
                             <select value={market} onChange={(e) => setMarket(e.target.value)}>
                                 {Object.keys(MARKET_MAPPING).map((m) => (
                                     <option key={m} value={m}>{m}</option>
@@ -106,7 +122,7 @@ const BulkTrader = () => {
                             </select>
                         </div>
                         <div className="form-group">
-                            <label>Strategy</label>
+                            <label>STRATEGY</label>
                             <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
                                 {Object.keys(STRATEGY_MAPPING).map((s) => (
                                     <option key={s} value={s}>{s}</option>
@@ -117,7 +133,7 @@ const BulkTrader = () => {
 
                     <div className="form-row">
                         <div className="form-group">
-                            <label>Stake (USD)</label>
+                            <label>STAKE (USD)</label>
                             <input 
                                 type="number" 
                                 step="0.1" 
@@ -128,7 +144,7 @@ const BulkTrader = () => {
                         </div>
                         {requiresPrediction && (
                             <div className="form-group">
-                                <label>Prediction</label>
+                                <label>PREDICTION</label>
                                 <input 
                                     type="number" 
                                     min="0" 
@@ -142,7 +158,7 @@ const BulkTrader = () => {
 
                     <div className="form-row">
                         <div className="form-group">
-                            <label>Duration (ticks)</label>
+                            <label>DURATION (TICKS)</label>
                             <input 
                                 type="number" 
                                 min="1" 
@@ -152,7 +168,7 @@ const BulkTrader = () => {
                             />
                         </div>
                         <div className="form-group">
-                            <label>No. of bulk trades</label>
+                            <label>NO. OF BULK TRADES</label>
                             <input 
                                 type="number" 
                                 min="1" 
@@ -170,22 +186,22 @@ const BulkTrader = () => {
                 </div>
             </div>
 
-            {/* Action Pad */}
+            {/* Bottom Action Pad */}
             <div className="action-pad-card">
                 <button className="btn-action-even" onClick={() => triggerBatch('Even')}>
-                    <span>⧈</span>
+                    <span className="icon">⧈</span>
                     Bulk Even
                 </button>
                 <button className="btn-action-ai" onClick={() => triggerBatch()}>
                     Bulk AI Entry
                 </button>
                 <button className="btn-action-odd" onClick={() => triggerBatch('Odd')}>
-                    <span>▲</span>
+                    <span className="icon">▲</span>
                     Bulk Odd
                 </button>
             </div>
 
-            {/* Footer */}
+            {/* Execution Footer */}
             <div className="footer-control-bar">
                 <button 
                     className={`btn-run ${isRunning ? 'running' : ''}`}
