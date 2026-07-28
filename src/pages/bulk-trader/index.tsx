@@ -7,9 +7,8 @@ import { MARKET_MAPPING, STRATEGY_MAPPING, TradeExecutionMode } from './types';
 const BulkTrader = () => {
     const store = useStore();
     
-    // Comprehensive OAuth token extractor
+    // Auto-extract session token from OAuth state or Deriv client storage
     const getOAuthToken = (): string | null => {
-        // 1. Try reading directly from MobX store client
         if (store?.client) {
             const { client } = store;
             if (client.token) return client.token;
@@ -22,7 +21,6 @@ const BulkTrader = () => {
             }
         }
 
-        // 2. Fall back to standard Deriv OAuth localStorage keys
         try {
             const activeLoginId = 
                 localStorage.getItem('active_loginid') || 
@@ -40,13 +38,11 @@ const BulkTrader = () => {
                 return accounts[activeLoginId].token;
             }
 
-            // Grab the first available account token if active_loginid isn't matched
             const keys = Object.keys(accounts);
             if (keys.length > 0 && accounts[keys[0]]?.token) {
                 return accounts[keys[0]].token;
             }
 
-            // Check tokenList array format
             const rawTokenList = localStorage.getItem('tokenList');
             if (rawTokenList) {
                 const tokenList = JSON.parse(rawTokenList);
@@ -56,7 +52,7 @@ const BulkTrader = () => {
                 }
             }
         } catch (e) {
-            console.error('Error parsing OAuth session from localStorage:', e);
+            console.error('Error parsing OAuth token:', e);
         }
 
         return null;
@@ -64,7 +60,6 @@ const BulkTrader = () => {
 
     const [token, setToken] = useState<string | null>(getOAuthToken());
 
-    // Keep token in sync if store or account changes
     useEffect(() => {
         const detectedToken = getOAuthToken();
         if (detectedToken && detectedToken !== token) {
@@ -106,150 +101,292 @@ const BulkTrader = () => {
     };
 
     return (
-        <div style={{ padding: '24px', color: '#ffffff', minHeight: '80vh' }}>
-            <div style={{ 
-                display: 'grid', 
-                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', 
-                gap: '16px', 
-                marginBottom: '24px', 
-                backgroundColor: '#1e293b', 
-                padding: '20px', 
-                borderRadius: '8px',
-                border: '1px solid #334155'
-            }}>
-                <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Market</label>
-                    <select 
-                        value={market} 
-                        onChange={(e) => setMarket(e.target.value)} 
-                        style={{ width: '100%', padding: '10px', backgroundColor: '#0f172a', color: '#ffffff', border: '1px solid #475569', borderRadius: '6px' }}
-                    >
-                        {Object.keys(MARKET_MAPPING).map((m) => (
-                            <option key={m} value={m}>{m}</option>
-                        ))}
-                    </select>
-                </div>
-
-                <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Strategy</label>
-                    <select 
-                        value={strategy} 
-                        onChange={(e) => setStrategy(e.target.value)} 
-                        style={{ width: '100%', padding: '10px', backgroundColor: '#0f172a', color: '#ffffff', border: '1px solid #475569', borderRadius: '6px' }}
-                    >
-                        {Object.keys(STRATEGY_MAPPING).map((s) => (
-                            <option key={s} value={s}>{s}</option>
-                        ))}
-                    </select>
-                </div>
-
-                <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Stake (USD)</label>
-                    <input 
-                        type="number" 
-                        step="0.1" 
-                        min="0.35" 
-                        value={stake} 
-                        onChange={(e) => setStake(Number(e.target.value))} 
-                        style={{ width: '100%', padding: '10px', backgroundColor: '#0f172a', color: '#ffffff', border: '1px solid #475569', borderRadius: '6px' }}
-                    />
-                </div>
-
-                <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Duration (ticks)</label>
-                    <input 
-                        type="number" 
-                        min="1" 
-                        max="10" 
-                        value={duration} 
-                        onChange={(e) => setDuration(Number(e.target.value))} 
-                        style={{ width: '100%', padding: '10px', backgroundColor: '#0f172a', color: '#ffffff', border: '1px solid #475569', borderRadius: '6px' }}
-                    />
-                </div>
-
-                {requiresPrediction && (
-                    <div>
-                        <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Prediction</label>
-                        <input 
-                            type="number" 
-                            min="0" 
-                            max="9" 
-                            value={prediction} 
-                            onChange={(e) => setPrediction(Number(e.target.value))} 
-                            style={{ width: '100%', padding: '10px', backgroundColor: '#0f172a', color: '#ffffff', border: '1px solid #475569', borderRadius: '6px' }}
-                        />
+        <div style={styles.container}>
+            <div style={styles.topSection}>
+                {/* Left Form Panel */}
+                <div style={styles.formCard}>
+                    <div style={styles.formRow}>
+                        <div style={styles.fieldGroup}>
+                            <label style={styles.label}>Market</label>
+                            <select 
+                                value={market} 
+                                onChange={(e) => setMarket(e.target.value)} 
+                                style={styles.select}
+                            >
+                                {Object.keys(MARKET_MAPPING).map((m) => (
+                                    <option key={m} value={m}>{m}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div style={styles.fieldGroup}>
+                            <label style={styles.label}>Strategy</label>
+                            <select 
+                                value={strategy} 
+                                onChange={(e) => setStrategy(e.target.value)} 
+                                style={styles.select}
+                            >
+                                {Object.keys(STRATEGY_MAPPING).map((s) => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                        </div>
                     </div>
-                )}
 
-                <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>No. of bulk trades</label>
-                    <input 
-                        type="number" 
-                        min="1" 
-                        max="50" 
-                        value={bulkCount} 
-                        onChange={(e) => setBulkCount(Number(e.target.value))} 
-                        style={{ width: '100%', padding: '10px', backgroundColor: '#0f172a', color: '#ffffff', border: '1px solid #475569', borderRadius: '6px' }}
-                    />
+                    <div style={styles.formRow}>
+                        <div style={styles.fieldGroup}>
+                            <label style={styles.label}>Stake (USD)</label>
+                            <input 
+                                type="number" 
+                                step="0.1" 
+                                min="0.35" 
+                                value={stake} 
+                                onChange={(e) => setStake(Number(e.target.value))} 
+                                style={styles.input}
+                            />
+                        </div>
+                        {requiresPrediction && (
+                            <div style={styles.fieldGroup}>
+                                <label style={styles.label}>Prediction</label>
+                                <input 
+                                    type="number" 
+                                    min="0" 
+                                    max="9" 
+                                    value={prediction} 
+                                    onChange={(e) => setPrediction(Number(e.target.value))} 
+                                    style={styles.input}
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    <div style={styles.formRow}>
+                        <div style={styles.fieldGroup}>
+                            <label style={styles.label}>Duration (ticks)</label>
+                            <input 
+                                type="number" 
+                                min="1" 
+                                max="10" 
+                                value={duration} 
+                                onChange={(e) => setDuration(Number(e.target.value))} 
+                                style={styles.input}
+                            />
+                        </div>
+                        <div style={styles.fieldGroup}>
+                            <label style={styles.label}>No. of bulk trades</label>
+                            <input 
+                                type="number" 
+                                min="1" 
+                                max="50" 
+                                value={bulkCount} 
+                                onChange={(e) => setBulkCount(Number(e.target.value))} 
+                                style={styles.input}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Right Visualizer Panel */}
+                <div style={styles.visualizerCard}>
+                    <DigitDisplay ticks={tickSequence} />
                 </div>
             </div>
 
-            <div style={{ marginBottom: '24px', backgroundColor: '#1e293b', padding: '20px', borderRadius: '8px', border: '1px solid #334155' }}>
-                <DigitDisplay ticks={tickSequence} />
-            </div>
-
-            <div style={{ 
-                display: 'flex', 
-                justify: 'space-between', 
-                alignItems: 'center', 
-                backgroundColor: '#1e293b', 
-                padding: '20px', 
-                borderRadius: '8px', 
-                border: '1px solid #334155',
-                flexWrap: 'wrap', 
-                gap: '16px' 
-            }}>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                    <button 
-                        onClick={() => triggerBatch('Even')} 
-                        style={{ padding: '10px 20px', backgroundColor: '#2563eb', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                    >
+            {/* Bottom Action Bar */}
+            <div style={styles.bottomBar}>
+                <div style={styles.centerButtons}>
+                    <button onClick={() => triggerBatch('Even')} style={styles.btnEven}>
+                        <div style={styles.btnIcon}>⧈</div>
                         Bulk Even
                     </button>
-                    <button 
-                        onClick={() => triggerBatch()} 
-                        style={{ padding: '10px 20px', backgroundColor: '#8b5cf6', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                    >
-                        Bulk AI Entry
+                    <button onClick={() => triggerBatch()} style={styles.btnAi}>
+                        <span style={styles.aiText}>Bulk AI Entry</span>
                     </button>
-                    <button 
-                        onClick={() => triggerBatch('Odd')} 
-                        style={{ padding: '10px 20px', backgroundColor: '#d97706', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                    >
+                    <button onClick={() => triggerBatch('Odd')} style={styles.btnOdd}>
+                        <div style={styles.btnIcon}>▲</div>
                         Bulk Odd
                     </button>
                 </div>
+            </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    <button 
-                        onClick={() => setIsRunning(!isRunning)}
-                        style={{ padding: '10px 24px', backgroundColor: isRunning ? '#ef4444' : '#10b981', color: '#ffffff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}
-                    >
-                        {isRunning ? 'Stop' : 'Run'}
-                    </button>
-                    <div style={{ fontSize: '14px', color: '#cbd5e1' }}>
-                        Execution: <strong style={{ color: '#ffffff' }}>{executionMode}</strong>
-                        <button 
-                            onClick={() => setExecutionMode(executionMode === 'FAST' ? 'SLOW' : 'FAST')}
-                            style={{ marginLeft: '10px', padding: '6px 10px', fontSize: '12px', backgroundColor: '#334155', color: '#ffffff', border: '1px solid #475569', borderRadius: '4px', cursor: 'pointer' }}
-                        >
-                            Toggle
-                        </button>
-                    </div>
+            {/* Execution Control Footer */}
+            <div style={styles.footerControl}>
+                <button 
+                    onClick={() => setIsRunning(!isRunning)}
+                    style={{
+                        ...styles.runBtn,
+                        backgroundColor: isRunning ? '#ef4444' : '#00c853'
+                    }}
+                >
+                    {isRunning ? 'Stop' : '▶ Run'}
+                </button>
+                <div style={styles.executionBadge}>
+                    <span style={styles.execText}>Execution <strong>{executionMode}</strong></span>
+                    <input 
+                        type="checkbox" 
+                        checked={executionMode === 'FAST'}
+                        onChange={(e) => setExecutionMode(e.target.checked ? 'FAST' : 'SLOW')}
+                        style={{ cursor: 'pointer', marginLeft: '10px' }}
+                    />
                 </div>
             </div>
         </div>
     );
+};
+
+const styles: Record<string, React.CSSProperties> = {
+    container: {
+        padding: '20px',
+        backgroundColor: '#12121c',
+        minHeight: '88vh',
+        color: '#ffffff',
+        fontFamily: 'sans-serif'
+    },
+    topSection: {
+        display: 'grid',
+        gridTemplateColumns: '1fr 1.3fr',
+        gap: '20px',
+        marginBottom: '20px'
+    },
+    formCard: {
+        backgroundColor: '#1a1a28',
+        borderRadius: '16px',
+        padding: '20px',
+        border: '1px solid #2a2a3d',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '16px'
+    },
+    formRow: {
+        display: 'flex',
+        gap: '16px'
+    },
+    fieldGroup: {
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px'
+    },
+    label: {
+        fontSize: '12px',
+        color: '#8a8aa0',
+        fontWeight: 'bold'
+    },
+    select: {
+        width: '100%',
+        padding: '12px',
+        backgroundColor: '#0d131d',
+        color: '#ffffff',
+        border: '1px solid #1e293b',
+        borderRadius: '10px',
+        outline: 'none'
+    },
+    input: {
+        width: '100%',
+        padding: '12px',
+        backgroundColor: '#0d131d',
+        color: '#ffffff',
+        border: '1px solid #1e293b',
+        borderRadius: '10px',
+        outline: 'none'
+    },
+    visualizerCard: {
+        backgroundColor: '#1a1a28',
+        borderRadius: '16px',
+        padding: '20px',
+        border: '1px solid #2a2a3d'
+    },
+    bottomBar: {
+        backgroundColor: '#1a1a28',
+        borderRadius: '16px',
+        padding: '20px',
+        border: '1px solid #2a2a3d',
+        display: 'flex',
+        justify: 'center',
+        marginBottom: '20px'
+    },
+    centerButtons: {
+        display: 'flex',
+        gap: '16px',
+        alignItems: 'center'
+    },
+    btnEven: {
+        width: '120px',
+        height: '80px',
+        backgroundColor: '#3b7a57',
+        color: '#ffffff',
+        border: 'none',
+        borderRadius: '12px',
+        fontWeight: 'bold',
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justify: 'center',
+        gap: '6px'
+    },
+    btnAi: {
+        width: '80px',
+        height: '80px',
+        borderRadius: '50%',
+        backgroundColor: '#38384a',
+        border: '2px solid #5a5a72',
+        color: '#ffffff',
+        fontSize: '10px',
+        fontWeight: 'bold',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justify: 'center',
+        textAlign: 'center'
+    },
+    aiText: {
+        maxWidth: '50px',
+        lineHeight: '1.2'
+    },
+    btnOdd: {
+        width: '120px',
+        height: '80px',
+        backgroundColor: '#8b3a42',
+        color: '#ffffff',
+        border: 'none',
+        borderRadius: '12px',
+        fontWeight: 'bold',
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justify: 'center',
+        gap: '6px'
+    },
+    btnIcon: {
+        fontSize: '18px'
+    },
+    footerControl: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '20px'
+    },
+    runBtn: {
+        padding: '12px 30px',
+        color: '#ffffff',
+        border: 'none',
+        borderRadius: '8px',
+        fontWeight: 'bold',
+        fontSize: '16px',
+        cursor: 'pointer'
+    },
+    executionBadge: {
+        display: 'flex',
+        alignItems: 'center',
+        backgroundColor: '#e6f4f1',
+        color: '#1e293b',
+        padding: '8px 16px',
+        borderRadius: '8px',
+        fontSize: '14px'
+    },
+    execText: {
+        color: '#0f172a'
+    }
 };
 
 export default BulkTrader;
