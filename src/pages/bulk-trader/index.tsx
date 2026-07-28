@@ -8,52 +8,44 @@ import './bulk-trader.scss';
 const BulkTrader = () => {
     const store = useStore();
     
-    // Deep session search across all Deriv OAuth storage mechanisms
+    // Comprehensive token extraction for Deriv OAuth
     const getActiveAccountToken = (): string | null => {
         try {
             // 1. Direct MobX store check
             if (store?.client?.token) return store.client.token;
-            if (typeof store?.client?.getToken === 'function') {
-                const t = store.client.getToken();
-                if (t) return t;
-            }
 
-            // 2. Active login ID lookup
+            // 2. Parse Deriv standard client.accounts
             const activeLoginId = 
                 localStorage.getItem('active_loginid') || 
                 sessionStorage.getItem('active_loginid') ||
                 localStorage.getItem('client.active_loginid');
 
-            // 3. Search client.accounts in localStorage / sessionStorage
-            const rawAccounts = 
+            const rawClientAccounts = 
                 localStorage.getItem('client.accounts') || 
-                sessionStorage.getItem('client.accounts') ||
-                localStorage.getItem('config.account_list') || 
-                '{}';
-            
-            const accounts = JSON.parse(rawAccounts);
+                sessionStorage.getItem('client.accounts');
 
-            if (activeLoginId && accounts[activeLoginId]?.token) {
-                return accounts[activeLoginId].token;
+            if (rawClientAccounts) {
+                const parsed = JSON.parse(rawClientAccounts);
+                if (activeLoginId && parsed[activeLoginId]?.token) {
+                    return parsed[activeLoginId].token;
+                }
+                const firstKey = Object.keys(parsed)[0];
+                if (firstKey && parsed[firstKey]?.token) {
+                    return parsed[firstKey].token;
+                }
             }
 
-            // Fallback: grab token from the first active account in list
-            const accountKeys = Object.keys(accounts);
-            if (accountKeys.length > 0 && accounts[accountKeys[0]]?.token) {
-                return accounts[accountKeys[0]].token;
-            }
-
-            // 4. Search tokenList format
-            const rawTokenList = localStorage.getItem('tokenList') || sessionStorage.getItem('tokenList');
-            if (rawTokenList) {
-                const tokenList = JSON.parse(rawTokenList);
-                if (Array.isArray(tokenList) && tokenList.length > 0) {
-                    const match = tokenList.find((item: any) => item.account === activeLoginId);
-                    return match?.token || tokenList[0]?.token || null;
+            // 3. Fallback: Check 'config.account_list' or 'accounts'
+            const rawAccounts = localStorage.getItem('config.account_list') || localStorage.getItem('accounts');
+            if (rawAccounts) {
+                const parsedList = JSON.parse(rawAccounts);
+                if (Array.isArray(parsedList) && parsedList.length > 0) {
+                    const matched = parsedList.find((acc: any) => acc.account === activeLoginId);
+                    return matched?.token || parsedList[0]?.token || null;
                 }
             }
         } catch (e) {
-            console.error('Error retrieving session token:', e);
+            console.error('Error resolving Deriv token:', e);
         }
 
         return null;
@@ -62,17 +54,14 @@ const BulkTrader = () => {
     const [token, setToken] = useState<string | null>(getActiveAccountToken());
 
     useEffect(() => {
-        const checkToken = () => {
-            const detectedToken = getActiveAccountToken();
-            if (detectedToken && detectedToken !== token) {
-                setToken(detectedToken);
+        const interval = setInterval(() => {
+            const currentToken = getActiveAccountToken();
+            if (currentToken && currentToken !== token) {
+                setToken(currentToken);
             }
-        };
-
-        checkToken();
-        const interval = setInterval(checkToken, 1000);
+        }, 1000);
         return () => clearInterval(interval);
-    }, [store, token]);
+    }, [token, store]);
 
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
     const [strategy, setStrategy] = useState<string>('Even');
@@ -110,7 +99,7 @@ const BulkTrader = () => {
     return (
         <div className="bulk-trader-wrapper">
             <div className="top-grid">
-                {/* Left Form Controls */}
+                {/* Left Controls */}
                 <div className="control-card">
                     <div className="form-row">
                         <div className="form-group">
@@ -201,7 +190,7 @@ const BulkTrader = () => {
                 </button>
             </div>
 
-            {/* Execution Footer */}
+            {/* Execution Control Footer */}
             <div className="footer-control-bar">
                 <button 
                     className={`btn-run ${isRunning ? 'running' : ''}`}
