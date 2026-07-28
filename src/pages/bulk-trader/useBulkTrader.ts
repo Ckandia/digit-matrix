@@ -1,37 +1,35 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { api_base } from '@/external/bot-skeleton/services/api/api-base';
 import { TickData, TradeExecutionMode } from './types';
 
-export const useBulkTrader = (token: string | null) => {
+export const useBulkTrader = () => {
     const [isConnected, setIsConnected] = useState<boolean>(false);
+    const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
     const [tickSequence, setTickSequence] = useState<TickData[]>([]);
-    const wsRef = useRef<WebSocket | null>(null);
+    
     const activeSymbolRef = useRef<string>('1HZ10V');
+    const subscriptionIdRef = useRef<string | null>(null);
 
     useEffect(() => {
-        // Deriv App ID 1089 or standard default
-        const app_id = localStorage.getItem('config.app_id') || '1089';
-        const ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-            setIsConnected(true);
-            // 1. Authorize session if token exists
-            if (token) {
-                ws.send(JSON.stringify({ authorize: token }));
-            }
-            // 2. Immediately subscribe to ticks (public stream works even before auth response)
-            ws.send(JSON.stringify({
-                ticks: activeSymbolRef.current,
-                subscribe: 1
-            }));
+        // Monitor connection status from shared API instance
+        const checkStatus = () => {
+            const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
+            setIsConnected(hasConnection);
+            setIsAuthorized(!!api_base.token);
         };
 
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
+        checkStatus();
+        const interval = setInterval(checkStatus, 1000);
 
-                // Handle Tick Stream Data
-                if (data.msg_type === 'tick' && data.tick) {
+        // Listen for incoming ticks on the shared stream
+        const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
+            if (data?.msg_type === 'tick' && data.tick) {
+                // Ensure tick matches active symbol
+                if (data.tick.symbol === activeSymbolRef.current) {
+                    if (data.subscription?.id) {
+                        subscriptionIdRef.current = data.subscription.id;
+                    }
+
                     const priceStr = data.tick.quote.toString();
                     const lastDigit = parseInt(priceStr.slice(-1), 10);
                     const isEven = lastDigit % 2 === 0;
@@ -45,51 +43,51 @@ export const useBulkTrader = (token: string | null) => {
 
                     setTickSequence((prev) => [...prev.slice(-49), newTick]);
                 }
-            } catch (err) {
-                console.error('Error parsing WebSocket message:', err);
             }
-        };
-
-        ws.onerror = (err) => {
-            console.error('WebSocket error:', err);
-            setIsConnected(false);
-        };
-
-        ws.onclose = () => {
-            setIsConnected(false);
-        };
+        });
 
         return () => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.close();
-            }
+            clearInterval(interval);
+            subscription?.unsubscribe();
         };
-    }, [token]);
+    }, []);
 
-    // Resubscribe when market changes
-    const subscribeTicks = useCallback((symbol: string) => {
-        if (!symbol || symbol === activeSymbolRef.current) return;
+    // Subscribe to tick stream without disrupting other tabs
+    const subscribeTicks = useCallback(async (symbol: string) => {
+        if (!symbol || !api_base.api) return;
+        
+        // Forget previous bulk-trader subscription if active
+        if (subscriptionIdRef.current) {
+            try {
+                await api_base.api.send({ forget: subscriptionIdRef.current });
+            } catch (err) {
+                console.warn('Failed to forget old tick stream ID:', err);
+            }
+            subscriptionIdRef.current = null;
+        }
+
         activeSymbolRef.current = symbol;
+        setTickSequence([]);
 
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            // Forget previous ticks stream then subscribe to new symbol
-            wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
-            wsRef.current.send(JSON.stringify({
+        // Request specific tick stream
+        try {
+            await api_base.api.send({
                 ticks: symbol,
                 subscribe: 1
-            }));
-            setTickSequence([]);
+            });
+        } catch (err) {
+            console.error('Error subscribing to ticks on shared socket:', err);
         }
     }, []);
 
-    // Execute Bulk Trades Batch
+    // Execute bulk trade batch via shared socket
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode, 
         count: number, 
         tradeParams: any
     ) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-            console.error('WebSocket connection is not active.');
+        if (!api_base.api) {
+            console.error('Shared API instance not ready.');
             return;
         }
 
@@ -97,28 +95,29 @@ export const useBulkTrader = (token: string | null) => {
 
         for (let i = 0; i < count; i++) {
             setTimeout(() => {
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    wsRef.current.send(JSON.stringify({
-                        buy: 1,
-                        price: tradeParams.amount,
-                        parameters: {
-                            amount: tradeParams.amount,
-                            basis: 'stake',
-                            contract_type: tradeParams.contract_type,
-                            currency: 'USD',
-                            duration: tradeParams.duration,
-                            duration_unit: 't',
-                            symbol: tradeParams.symbol,
-                            ...(tradeParams.prediction !== undefined ? { barrier: String(tradeParams.prediction) } : {})
-                        }
-                    }));
-                }
+                api_base.api.send({
+                    buy: 1,
+                    price: tradeParams.amount,
+                    parameters: {
+                        amount: tradeParams.amount,
+                        basis: 'stake',
+                        contract_type: tradeParams.contract_type,
+                        currency: 'USD',
+                        duration: tradeParams.duration,
+                        duration_unit: 't',
+                        symbol: tradeParams.symbol,
+                        ...(tradeParams.prediction !== undefined ? { barrier: String(tradeParams.prediction) } : {})
+                    }
+                }).catch((err: any) => {
+                    console.error(`Bulk trade execution error (Trade #${i + 1}):`, err);
+                });
             }, i * delay);
         }
     }, []);
 
     return {
         isConnected,
+        isAuthorized,
         tickSequence,
         subscribeTicks,
         executeBulkTrades
