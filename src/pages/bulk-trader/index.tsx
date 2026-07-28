@@ -3,12 +3,10 @@ import { useStore } from '@/hooks/useStore';
 import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { MARKET_MAPPING, STRATEGY_MAPPING, TradeExecutionMode } from './types';
-import './bulk-trader.scss';
 
 const BulkTrader = () => {
     const store = useStore();
     
-    // Auth token extraction chain with local storage fallback
     const storeToken = store?.client?.getToken?.() || store?.client?.token;
     const localAccounts = JSON.parse(localStorage.getItem('client.accounts') || '{}');
     const activeLoginId = localStorage.getItem('active_loginid');
