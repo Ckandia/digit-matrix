@@ -12,7 +12,7 @@
     margin-bottom: 20px;
   }
 
-  /* Control Panel Left */
+  /* Left Control Card */
   .control-card {
     background: #161623;
     border-radius: 16px;
@@ -37,7 +37,6 @@
         font-size: 11px;
         color: #94a3b8;
         font-weight: 600;
-        text-transform: uppercase;
         letter-spacing: 0.5px;
       }
 
@@ -65,7 +64,7 @@
     }
   }
 
-  /* Visualizer Card Right */
+  /* Right Visualizer Card */
   .visualizer-card {
     background: #161623;
     border-radius: 16px;
@@ -73,29 +72,28 @@
     border: 1px solid #232338;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
   }
 
-  /* Heatmap Circles */
+  /* Heatmap Bar */
   .digit-heatmap-container {
-    background: #f8fafc;
+    background: #ffffff;
     border-radius: 14px;
-    padding: 12px;
+    padding: 10px 14px;
     display: flex;
     justify-content: space-between;
     align-items: center;
 
     .digit-circle {
-      width: 44px;
+      width: 42px;
       height: 48px;
-      background: #0f172a;
+      background: #0b111a;
       border-radius: 12px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify: center;
+      justify-content: center;
       border: 2px solid transparent;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 
       &.digit-0 { border-color: #ef4444; }
       &.digit-1 { border-color: #22c55e; }
@@ -110,7 +108,7 @@
 
       &.active-latest {
         background: #3b82f6 !important;
-        box-shadow: 0 0 12px rgba(59, 130, 246, 0.8);
+        box-shadow: 0 0 10px rgba(59, 130, 246, 0.8);
         .num, .pct { color: #ffffff !important; }
       }
 
@@ -118,33 +116,33 @@
         font-size: 14px;
         font-weight: 800;
         color: #ffffff;
-        margin-top: 4px;
       }
 
       .pct {
         font-size: 8px;
         font-weight: 700;
         color: #94a3b8;
-        margin-bottom: 4px;
       }
     }
   }
 
-  /* Sequence Grid (E and O) */
+  /* White Sequence Screen */
   .sequence-grid-wrapper {
-    background: #f8fafc;
-    border-radius: 14px;
-    padding: 16px;
-    min-height: 180px;
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 20px;
+    min-height: 220px;
+    box-sizing: border-box;
 
     .grid-container {
       display: grid;
       grid-template-columns: repeat(13, 1fr);
-      gap: 12px 8px;
+      gap: 16px 12px;
       justify-items: center;
+      align-items: center;
 
       .seq-cell {
-        font-size: 13px;
+        font-size: 15px;
         font-weight: 800;
 
         &.E { color: #22c55e; }
@@ -153,11 +151,11 @@
     }
   }
 
-  /* Action Buttons Pad */
+  /* Action Buttons */
   .action-pad-card {
     background: #161623;
     border-radius: 16px;
-    padding: 24px;
+    padding: 20px;
     border: 1px solid #232338;
     display: flex;
     justify-content: center;
@@ -179,10 +177,10 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 6px;
-      box-shadow: 0 4px 12px rgba(46, 111, 64, 0.3);
+      gap: 4px;
 
       &:hover { background: #35804a; }
+      .icon { font-size: 16px; }
     }
 
     .btn-action-ai {
@@ -218,14 +216,14 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 6px;
-      box-shadow: 0 4px 12px rgba(139, 58, 66, 0.3);
+      gap: 4px;
 
       &:hover { background: #a1434c; }
+      .icon { font-size: 16px; }
     }
   }
 
-  /* Execution Control Footer Bar */
+  /* Execution Footer */
   .footer-control-bar {
     display: flex;
     align-items: center;
