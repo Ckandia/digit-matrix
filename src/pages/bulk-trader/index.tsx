@@ -7,36 +7,70 @@ import { MARKET_MAPPING, STRATEGY_MAPPING, TradeExecutionMode } from './types';
 const BulkTrader = () => {
     const store = useStore();
     
-    // Auto-detect token across active session storage formats
-    const getActiveToken = () => {
-        if (store?.client?.getToken?.()) return store.client.getToken();
-        if (store?.client?.token) return store.client.token;
-
-        try {
-            const activeLoginId = localStorage.getItem('active_loginid') || localStorage.getItem('active_account');
-            const rawAccounts = localStorage.getItem('client.accounts') || localStorage.getItem('account_list') || '{}';
-            const localAccounts = JSON.parse(rawAccounts);
-
-            if (activeLoginId && localAccounts[activeLoginId]?.token) {
-                return localAccounts[activeLoginId].token;
+    // Comprehensive OAuth token extractor
+    const getOAuthToken = (): string | null => {
+        // 1. Try reading directly from MobX store client
+        if (store?.client) {
+            const { client } = store;
+            if (client.token) return client.token;
+            if (client.loginid && client.accounts?.[client.loginid]?.token) {
+                return client.accounts[client.loginid].token;
             }
-            if (Array.isArray(localAccounts) && localAccounts.length > 0) {
-                return localAccounts[0]?.token || null;
+            if (typeof client.getToken === 'function') {
+                const t = client.getToken();
+                if (t) return t;
+            }
+        }
+
+        // 2. Fall back to standard Deriv OAuth localStorage keys
+        try {
+            const activeLoginId = 
+                localStorage.getItem('active_loginid') || 
+                localStorage.getItem('active_account') ||
+                localStorage.getItem('client.active_loginid');
+
+            const rawAccounts = 
+                localStorage.getItem('client.accounts') || 
+                localStorage.getItem('config.account_list') || 
+                '{}';
+            
+            const accounts = JSON.parse(rawAccounts);
+
+            if (activeLoginId && accounts[activeLoginId]?.token) {
+                return accounts[activeLoginId].token;
+            }
+
+            // Grab the first available account token if active_loginid isn't matched
+            const keys = Object.keys(accounts);
+            if (keys.length > 0 && accounts[keys[0]]?.token) {
+                return accounts[keys[0]].token;
+            }
+
+            // Check tokenList array format
+            const rawTokenList = localStorage.getItem('tokenList');
+            if (rawTokenList) {
+                const tokenList = JSON.parse(rawTokenList);
+                if (Array.isArray(tokenList) && tokenList.length > 0) {
+                    const match = tokenList.find((item: any) => item.account === activeLoginId);
+                    return match?.token || tokenList[0]?.token || null;
+                }
             }
         } catch (e) {
-            console.error('Error reading session tokens', e);
+            console.error('Error parsing OAuth session from localStorage:', e);
         }
+
         return null;
     };
 
-    const [token, setToken] = useState<string | null>(getActiveToken());
-    
+    const [token, setToken] = useState<string | null>(getOAuthToken());
+
+    // Keep token in sync if store or account changes
     useEffect(() => {
-        const detected = getActiveToken();
-        if (detected && detected !== token) {
-            setToken(detected);
+        const detectedToken = getOAuthToken();
+        if (detectedToken && detectedToken !== token) {
+            setToken(detectedToken);
         }
-    }, [store]);
+    }, [store, store?.client?.loginid]);
 
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
     const [strategy, setStrategy] = useState<string>('Even');
@@ -71,33 +105,6 @@ const BulkTrader = () => {
         });
     };
 
-    // Fallback UI if no token is found
-    if (!token) {
-        return (
-            <div style={{ padding: '32px', color: '#ffffff', maxWidth: '500px' }}>
-                <h3 style={{ marginBottom: '12px', fontSize: '18px', color: '#ffffff' }}>Active Session Required</h3>
-                <p style={{ marginBottom: '16px', color: '#94a3b8', fontSize: '14px' }}>
-                    Could not automatically detect your active login token. Enter your Deriv API token below:
-                </p>
-                <input 
-                    type="text" 
-                    placeholder="Enter Deriv API Token" 
-                    onChange={(e) => setToken(e.target.value.trim())} 
-                    style={{
-                        width: '100%',
-                        padding: '10px 14px',
-                        borderRadius: '6px',
-                        border: '1px solid #334155',
-                        backgroundColor: '#1e293b',
-                        color: '#ffffff',
-                        fontSize: '14px'
-                    }}
-                />
-            </div>
-        );
-    }
-
-    // Main Dashboard Controls
     return (
         <div style={{ padding: '24px', color: '#ffffff', minHeight: '80vh' }}>
             <div style={{ 
