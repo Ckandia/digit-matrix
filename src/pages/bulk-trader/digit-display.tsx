@@ -1,6 +1,5 @@
 import React from 'react';
 import { TickData } from './types';
-import './bulk-trader.scss';
 
 interface DigitDisplayProps {
     ticks: TickData[];
