@@ -1,114 +1,126 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { TickData, TradeExecutionMode, TradePayload } from './types';
+import { TickData, TradeExecutionMode } from './types';
 
 export const useBulkTrader = (token: string | null) => {
-    const ws = useRef<WebSocket | null>(null);
-    const activeSubId = useRef<string | null>(null);
-    const [isConnected, setIsConnected] = useState(false);
+    const [isConnected, setIsConnected] = useState<boolean>(false);
     const [tickSequence, setTickSequence] = useState<TickData[]>([]);
-    
-    // Persistent rolling buffer maintained across resets
-    const MAX_BUFFER = 100;
+    const wsRef = useRef<WebSocket | null>(null);
+    const activeSymbolRef = useRef<string>('1HZ10V');
 
     useEffect(() => {
-        if (!token) return;
+        // Deriv App ID 1089 or standard default
+        const app_id = localStorage.getItem('config.app_id') || '1089';
+        const ws = new WebSocket(`wss://ws.derivws.com/websockets/v3?app_id=${app_id}`);
+        wsRef.current = ws;
 
-        const appId = process.env.NEXT_PUBLIC_DERIV_APP_ID || '1089';
-        ws.current = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${appId}`);
-
-        ws.current.onopen = () => {
-            ws.current?.send(JSON.stringify({ authorize: token }));
+        ws.onopen = () => {
+            setIsConnected(true);
+            // 1. Authorize session if token exists
+            if (token) {
+                ws.send(JSON.stringify({ authorize: token }));
+            }
+            // 2. Immediately subscribe to ticks (public stream works even before auth response)
+            ws.send(JSON.stringify({
+                ticks: activeSymbolRef.current,
+                subscribe: 1
+            }));
         };
 
-        ws.current.onmessage = (msg) => {
-            const data = JSON.parse(msg.data);
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
 
-            if (data.error) {
-                console.error('WebSocket Error:', data.error.message);
-                return;
-            }
+                // Handle Tick Stream Data
+                if (data.msg_type === 'tick' && data.tick) {
+                    const priceStr = data.tick.quote.toString();
+                    const lastDigit = parseInt(priceStr.slice(-1), 10);
+                    const isEven = lastDigit % 2 === 0;
 
-            if (data.msg_type === 'authorize') {
-                setIsConnected(true);
-            }
-
-            if (data.msg_type === 'tick' && data.tick) {
-                if (data.subscription?.id) {
-                    activeSubId.current = data.subscription.id;
-                }
-                const quote = data.tick.quote;
-                const quoteStr = quote.toFixed(data.tick.pip_size || 2);
-                const digit = parseInt(quoteStr.slice(-1), 10);
-                const epoch = data.tick.epoch;
-
-                setTickSequence(prev => {
                     const newTick: TickData = {
-                        epoch,
-                        quote,
-                        digit,
-                        type: digit % 2 === 0 ? 'E' : 'O',
+                        epoch: data.tick.epoch,
+                        quote: data.tick.quote,
+                        digit: lastDigit,
+                        type: isEven ? 'E' : 'O',
                     };
-                    const updated = [...prev, newTick];
-                    return updated.length > MAX_BUFFER ? updated.slice(-MAX_BUFFER) : updated;
-                });
-            }
 
-            if (data.msg_type === 'proposal') {
-                const proposalId = data.proposal?.id;
-                if (proposalId) {
-                    ws.current?.send(JSON.stringify({ buy: proposalId, price: data.proposal.ask_price }));
+                    setTickSequence((prev) => [...prev.slice(-49), newTick]);
                 }
+            } catch (err) {
+                console.error('Error parsing WebSocket message:', err);
             }
+        };
+
+        ws.onerror = (err) => {
+            console.error('WebSocket error:', err);
+            setIsConnected(false);
+        };
+
+        ws.onclose = () => {
+            setIsConnected(false);
         };
 
         return () => {
-            if (activeSubId.current) {
-                ws.current?.send(JSON.stringify({ forget: activeSubId.current }));
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.close();
             }
-            ws.current?.close();
         };
     }, [token]);
 
+    // Resubscribe when market changes
     const subscribeTicks = useCallback((symbol: string) => {
-        if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
-        
-        if (activeSubId.current) {
-            ws.current.send(JSON.stringify({ forget: activeSubId.current }));
-            activeSubId.current = null;
-        }
+        if (!symbol || symbol === activeSymbolRef.current) return;
+        activeSymbolRef.current = symbol;
 
-        ws.current.send(JSON.stringify({ ticks: symbol }));
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            // Forget previous ticks stream then subscribe to new symbol
+            wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
+            wsRef.current.send(JSON.stringify({
+                ticks: symbol,
+                subscribe: 1
+            }));
+            setTickSequence([]);
+        }
     }, []);
 
-    const executeBulkTrades = useCallback(
-        (mode: TradeExecutionMode, count: number, payload: TradePayload) => {
-            if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+    // Execute Bulk Trades Batch
+    const executeBulkTrades = useCallback((
+        mode: TradeExecutionMode, 
+        count: number, 
+        tradeParams: any
+    ) => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            console.error('WebSocket connection is not active.');
+            return;
+        }
 
-            const delay = mode === 'FAST' ? 100 : 1200;
+        const delay = mode === 'FAST' ? 50 : 300;
 
-            for (let i = 0; i < count; i++) {
-                setTimeout(() => {
-                    const req: Record<string, any> = {
-                        proposal: 1,
-                        amount: payload.amount,
-                        basis: 'stake',
-                        contract_type: payload.contract_type,
-                        currency: 'USD',
-                        duration: payload.duration,
-                        duration_unit: 't',
-                        symbol: payload.symbol,
-                    };
+        for (let i = 0; i < count; i++) {
+            setTimeout(() => {
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                        buy: 1,
+                        price: tradeParams.amount,
+                        parameters: {
+                            amount: tradeParams.amount,
+                            basis: 'stake',
+                            contract_type: tradeParams.contract_type,
+                            currency: 'USD',
+                            duration: tradeParams.duration,
+                            duration_unit: 't',
+                            symbol: tradeParams.symbol,
+                            ...(tradeParams.prediction !== undefined ? { barrier: String(tradeParams.prediction) } : {})
+                        }
+                    }));
+                }
+            }, i * delay);
+        }
+    }, []);
 
-                    if (payload.prediction !== undefined) {
-                        req.barrier = payload.prediction.toString();
-                    }
-
-                    ws.current?.send(JSON.stringify(req));
-                }, i * delay);
-            }
-        },
-        []
-    );
-
-    return { isConnected, tickSequence, subscribeTicks, executeBulkTrades };
+    return {
+        isConnected,
+        tickSequence,
+        subscribeTicks,
+        executeBulkTrades
+    };
 };
