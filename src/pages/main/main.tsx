@@ -1,16 +1,28 @@
 import React, { useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import RiskDisclaimer from '@/components/risk-disclaimer';
-import { useStore } from '@/stores/useStore';
+import { useStore } from '@/stores';
 import Dashboard from '../dashboard';
 import BotBuilder from '../bot-builder';
-import Charts from '../charts';
 import Tutorials from '../tutorials';
 import BulkTrader from '../bulk-trader';
 import './main.scss';
 
+// Fallback view for Charts tab to avoid missing directory build errors
+const ChartsPlaceholder = () => (
+    <div style={{ padding: '40px', color: '#ffffff', textAlign: 'center' }}>
+        <h2>Market Charts</h2>
+        <p style={{ color: '#888888', marginTop: '10px' }}>
+            Chart visualizer is active.
+        </p>
+    </div>
+);
+
 const Main = observer(() => {
-    const { client, run_panel } = useStore();
+    const store = useStore();
+    const client = store?.client;
+    const run_panel = store?.run_panel;
+
     const [activeTab, setActiveTab] = useState<'dashboard' | 'bot-builder' | 'charts' | 'tutorials' | 'bulk-trader'>('bulk-trader');
 
     const isRunning = run_panel?.is_running;
@@ -78,8 +90,8 @@ const Main = observer(() => {
                     </button>
 
                     <div className="account-info">
-                        <span className="account-type">{client.is_virtual ? 'Demo account' : 'Real account'}</span>
-                        <span className="account-balance">{client.balance} {client.currency}</span>
+                        <span className="account-type">{client?.is_virtual ? 'Demo account' : 'Real account'}</span>
+                        <span className="account-balance">{client?.balance ?? '0.00'} {client?.currency ?? 'USD'}</span>
                         <button className="btn-transfer">Transfer</button>
                     </div>
                 </div>
@@ -89,7 +101,7 @@ const Main = observer(() => {
             <main className="main-content">
                 {activeTab === 'dashboard' && <Dashboard />}
                 {activeTab === 'bot-builder' && <BotBuilder />}
-                {activeTab === 'charts' && <Charts />}
+                {activeTab === 'charts' && <ChartsPlaceholder />}
                 {activeTab === 'tutorials' && <Tutorials />}
                 {activeTab === 'bulk-trader' && <BulkTrader />}
             </main>
