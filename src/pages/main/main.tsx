@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import RiskDisclaimer from '@/components/risk-disclaimer';
 import { api_base } from '@/external/bot-skeleton/services/api/api-base';
 import Dashboard from '../dashboard';
 import BotBuilder from '../bot-builder';
@@ -128,9 +127,6 @@ const Main = () => {
                 {activeTab === 'tutorials' && <Tutorials />}
                 {activeTab === 'bulk-trader' && <BulkTrader />}
             </main>
-
-            {/* Floating Global Risk Disclaimer */}
-            <RiskDisclaimer />
         </div>
     );
 };
