@@ -60,7 +60,6 @@ const BulkTrader = () => {
     return (
         <div className="bulk-trader-wrapper">
             <div className="top-grid">
-                {/* Controls Card */}
                 <div className="control-card">
                     <div className="form-row">
                         <div className="form-group">
@@ -84,24 +83,12 @@ const BulkTrader = () => {
                     <div className="form-row">
                         <div className="form-group">
                             <label>STAKE (USD)</label>
-                            <input 
-                                type="number" 
-                                step="0.1" 
-                                min="0.35" 
-                                value={stake} 
-                                onChange={(e) => setStake(Number(e.target.value))} 
-                            />
+                            <input type="number" step="0.1" min="0.35" value={stake} onChange={(e) => setStake(Number(e.target.value))} />
                         </div>
                         {requiresPrediction && (
                             <div className="form-group">
                                 <label>PREDICTION</label>
-                                <input 
-                                    type="number" 
-                                    min="0" 
-                                    max="9" 
-                                    value={prediction} 
-                                    onChange={(e) => setPrediction(Number(e.target.value))} 
-                                />
+                                <input type="number" min="0" max="9" value={prediction} onChange={(e) => setPrediction(Number(e.target.value))} />
                             </div>
                         )}
                     </div>
@@ -109,92 +96,54 @@ const BulkTrader = () => {
                     <div className="form-row">
                         <div className="form-group">
                             <label>DURATION (TICKS)</label>
-                            <input 
-                                type="number" 
-                                min="1" 
-                                max="10" 
-                                value={duration} 
-                                onChange={(e) => setDuration(Number(e.target.value))} 
-                            />
+                            <input type="number" min="1" max="10" value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
                         </div>
                         <div className="form-group">
                             <label>NO. OF BULK TRADES</label>
-                            <input 
-                                type="number" 
-                                min="1" 
-                                max="50" 
-                                value={bulkCount} 
-                                onChange={(e) => setBulkCount(Number(e.target.value))} 
-                            />
+                            <input type="number" min="1" max="50" value={bulkCount} onChange={(e) => setBulkCount(Number(e.target.value))} />
                         </div>
                     </div>
                 </div>
 
-                {/* Digit Visualizer Display */}
                 <div className="visualizer-card">
                     <DigitDisplay ticks={tickSequence} />
                 </div>
             </div>
 
-            {/* Bulk Action Controls */}
             <div className="action-pad-card">
-                <button 
-                    className="btn-action-even" 
-                    onClick={() => triggerBatch('Even')}
-                    disabled={!canTrade}
-                >
-                    <span className="icon">⧈</span>
-                    Bulk Even
+                <button className="btn-action-even" onClick={() => triggerBatch('Even')} disabled={!canTrade}>
+                    <span className="icon">⧈</span> Bulk Even
                 </button>
-                <button 
-                    className="btn-action-ai" 
-                    onClick={() => triggerBatch()}
-                    disabled={!canTrade}
-                >
+                <button className="btn-action-ai" onClick={() => triggerBatch()} disabled={!canTrade}>
                     Bulk AI Entry
                 </button>
-                <button 
-                    className="btn-action-odd" 
-                    onClick={() => triggerBatch('Odd')}
-                    disabled={!canTrade}
-                >
-                    <span className="icon">▲</span>
-                    Bulk Odd
+                <button className="btn-action-odd" onClick={() => triggerBatch('Odd')} disabled={!canTrade}>
+                    <span className="icon">▲</span> Bulk Odd
                 </button>
             </div>
 
-            {/* Live Feedback Strip */}
             {tradeLog.length > 0 && (
-                <div className="trade-log-strip">
+                <div className="trade-log-strip" style={{ marginTop: '10px', fontSize: '12px', color: '#ffcc80' }}>
                     <span>
                         {tradeLog.filter(t => t?.status === 'success').length} succeeded ·{' '}
-                        {tradeLog.filter(t => t?.status === 'error').length} failed ·{' '}
-                        {tradeLog.filter(t => t?.status === 'pending').length} pending
+                        {tradeLog.filter(t => t?.status === 'error').length} failed
                     </span>
                     {tradeLog.some(t => t?.status === 'error') && (
-                        <span className="last-error">
-                            {tradeLog.filter(t => t?.status === 'error').slice(-1)[0]?.message}
-                        </span>
+                        <div style={{ color: '#ef4444', marginTop: '4px' }}>
+                            Error: {tradeLog.filter(t => t?.status === 'error').slice(-1)[0]?.message}
+                        </div>
                     )}
                 </div>
             )}
 
-            {/* Execution Footer Bar */}
             <div className="footer-control-bar">
-                <button 
-                    className={`btn-run ${isRunning ? 'running' : ''}`}
-                    onClick={() => setIsRunning(!isRunning)}
-                >
+                <button className={`btn-run ${isRunning ? 'running' : ''}`} onClick={() => setIsRunning(!isRunning)}>
                     {isRunning ? 'Stop' : '▶ Run'}
                 </button>
                 <div className="execution-pill">
                     <span>Execution <strong>{executionMode}</strong></span>
                     <label className="switch">
-                        <input 
-                            type="checkbox" 
-                            checked={executionMode === 'FAST'}
-                            onChange={(e) => setExecutionMode(e.target.checked ? 'FAST' : 'SLOW')}
-                        />
+                        <input type="checkbox" checked={executionMode === 'FAST'} onChange={(e) => setExecutionMode(e.target.checked ? 'FAST' : 'SLOW')} />
                         <span className="slider"></span>
                     </label>
                 </div>
