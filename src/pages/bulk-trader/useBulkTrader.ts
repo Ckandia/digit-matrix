@@ -11,20 +11,27 @@ export const useBulkTrader = () => {
     const subscriptionIdRef = useRef<string | null>(null);
 
     useEffect(() => {
-        // Monitor connection status from shared API instance
         const checkStatus = () => {
             const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
+            
+            // Check multiple places for authorized status
+            const hasToken = !!(
+                api_base.token || 
+                api_base.account_info?.token || 
+                localStorage.getItem('client.accounts') ||
+                localStorage.getItem('active_loginid')
+            );
+
             setIsConnected(hasConnection);
-            setIsAuthorized(!!api_base.token);
+            setIsAuthorized(hasConnection && hasToken);
         };
 
         checkStatus();
-        const interval = setInterval(checkStatus, 1000);
+        const interval = setInterval(checkStatus, 500);
 
-        // Listen for incoming ticks on the shared stream
+        // Listen for incoming ticks
         const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
             if (data?.msg_type === 'tick' && data.tick) {
-                // Ensure tick matches active symbol
                 if (data.tick.symbol === activeSymbolRef.current) {
                     if (data.subscription?.id) {
                         subscriptionIdRef.current = data.subscription.id;
@@ -52,16 +59,14 @@ export const useBulkTrader = () => {
         };
     }, []);
 
-    // Subscribe to tick stream without disrupting other tabs
     const subscribeTicks = useCallback(async (symbol: string) => {
         if (!symbol || !api_base.api) return;
         
-        // Forget previous bulk-trader subscription if active
         if (subscriptionIdRef.current) {
             try {
                 await api_base.api.send({ forget: subscriptionIdRef.current });
             } catch (err) {
-                console.warn('Failed to forget old tick stream ID:', err);
+                // Ignore cleanup error if already forgotten
             }
             subscriptionIdRef.current = null;
         }
@@ -69,7 +74,6 @@ export const useBulkTrader = () => {
         activeSymbolRef.current = symbol;
         setTickSequence([]);
 
-        // Request specific tick stream
         try {
             await api_base.api.send({
                 ticks: symbol,
@@ -80,37 +84,46 @@ export const useBulkTrader = () => {
         }
     }, []);
 
-    // Execute bulk trade batch via shared socket
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode, 
         count: number, 
         tradeParams: any
     ) => {
         if (!api_base.api) {
-            console.error('Shared API instance not ready.');
+            console.error('API connection not available.');
             return;
         }
 
         const delay = mode === 'FAST' ? 50 : 300;
 
         for (let i = 0; i < count; i++) {
-            setTimeout(() => {
-                api_base.api.send({
-                    buy: 1,
-                    price: tradeParams.amount,
-                    parameters: {
-                        amount: tradeParams.amount,
-                        basis: 'stake',
-                        contract_type: tradeParams.contract_type,
-                        currency: 'USD',
-                        duration: tradeParams.duration,
-                        duration_unit: 't',
-                        symbol: tradeParams.symbol,
-                        ...(tradeParams.prediction !== undefined ? { barrier: String(tradeParams.prediction) } : {})
+            setTimeout(async () => {
+                try {
+                    // Deriv direct proposal + buy request payload
+                    const req: any = {
+                        buy: 1,
+                        price: tradeParams.amount,
+                        parameters: {
+                            amount: tradeParams.amount,
+                            basis: 'stake',
+                            contract_type: tradeParams.contract_type,
+                            currency: 'USD',
+                            duration: tradeParams.duration,
+                            duration_unit: 't',
+                            symbol: tradeParams.symbol,
+                        }
+                    };
+
+                    if (tradeParams.prediction !== undefined) {
+                        req.parameters.barrier = String(tradeParams.prediction);
                     }
-                }).catch((err: any) => {
-                    console.error(`Bulk trade execution error (Trade #${i + 1}):`, err);
-                });
+
+                    console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
+                    const response = await api_base.api.send(req);
+                    console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
+                } catch (err) {
+                    console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
+                }
             }, i * delay);
         }
     }, []);
