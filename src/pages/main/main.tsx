@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
-import { observer } from 'mobx-react-lite';
+import React, { useState, useEffect } from 'react';
 import RiskDisclaimer from '@/components/risk-disclaimer';
-import { useStore } from '@/stores';
+import { api_base } from '@/external/bot-skeleton/services/api/api-base';
 import Dashboard from '../dashboard';
 import BotBuilder from '../bot-builder';
 import Tutorials from '../tutorials';
@@ -18,21 +17,45 @@ const ChartsPlaceholder = () => (
     </div>
 );
 
-const Main = observer(() => {
-    const store = useStore();
-    const client = store?.client;
-    const run_panel = store?.run_panel;
-
+const Main = () => {
     const [activeTab, setActiveTab] = useState<'dashboard' | 'bot-builder' | 'charts' | 'tutorials' | 'bulk-trader'>('bulk-trader');
+    const [isRunning, setIsRunning] = useState<boolean>(false);
+    
+    // Fallback states for the header balance
+    const [balance, setBalance] = useState<string>('0.00');
+    const [currency, setCurrency] = useState<string>('USD');
+    const [isDemo, setIsDemo] = useState<boolean>(true);
 
-    const isRunning = run_panel?.is_running;
+    useEffect(() => {
+        // Synchronize header with api_base account info
+        const syncAccountInfo = () => {
+            if (api_base?.account_info) {
+                setBalance(api_base.account_info.balance?.toString() || '0.00');
+                setCurrency(api_base.account_info.currency || 'USD');
+                setIsDemo(api_base.account_info.is_virtual === 1);
+            } else if (localStorage.getItem('client.accounts')) {
+                try {
+                    const accounts = JSON.parse(localStorage.getItem('client.accounts') || '{}');
+                    const activeId = localStorage.getItem('active_loginid');
+                    if (activeId && accounts[activeId]) {
+                        setBalance(accounts[activeId].balance?.toString() || '0.00');
+                        setCurrency(accounts[activeId].currency || 'USD');
+                        setIsDemo(accounts[activeId].is_virtual === 1);
+                    }
+                } catch (e) {
+                    // Ignore parse errors
+                }
+            }
+        };
+
+        syncAccountInfo();
+        const interval = setInterval(syncAccountInfo, 2000);
+        return () => clearInterval(interval);
+    }, []);
 
     const handleRunToggle = () => {
-        if (isRunning) {
-            run_panel?.stopBot();
-        } else {
-            run_panel?.runBot();
-        }
+        setIsRunning(!isRunning);
+        // Add direct bot start/stop hook logic here if needed
     };
 
     return (
@@ -90,8 +113,8 @@ const Main = observer(() => {
                     </button>
 
                     <div className="account-info">
-                        <span className="account-type">{client?.is_virtual ? 'Demo account' : 'Real account'}</span>
-                        <span className="account-balance">{client?.balance ?? '0.00'} {client?.currency ?? 'USD'}</span>
+                        <span className="account-type">{isDemo ? 'Demo account' : 'Real account'}</span>
+                        <span className="account-balance">{balance} {currency}</span>
                         <button className="btn-transfer">Transfer</button>
                     </div>
                 </div>
@@ -110,6 +133,6 @@ const Main = observer(() => {
             <RiskDisclaimer />
         </div>
     );
-});
+};
 
 export default Main;
