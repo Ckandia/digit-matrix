@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useBulkTrader } from './useBulkTrader';
+import { useBulkTrader, TradeResult } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { MARKET_MAPPING, STRATEGY_MAPPING, TradeExecutionMode } from './types';
 import './bulk-trader.scss';
@@ -13,6 +13,7 @@ const BulkTrader = () => {
     const [prediction, setPrediction] = useState<number>(1);
     const [executionMode, setExecutionMode] = useState<TradeExecutionMode>('FAST');
     const [isRunning, setIsRunning] = useState<boolean>(false);
+    const [tradeLog, setTradeLog] = useState<TradeResult[]>([]);
 
     const { isConnected, isAuthorized, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
@@ -23,22 +24,37 @@ const BulkTrader = () => {
     }, [isConnected, market, subscribeTicks]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
-    
-    // Enable trade execution if connected (or if authorization check passes)
     const canTrade = isConnected;
+
+    const handleTradeResult = (result: TradeResult) => {
+        setTradeLog((prev) => {
+            const next = [...prev];
+            if (result.index >= 0) {
+                next[result.index] = result;
+            }
+            return next;
+        });
+    };
 
     const triggerBatch = (typeOverride?: 'Even' | 'Odd') => {
         let selectedContract = STRATEGY_MAPPING[strategy];
         if (typeOverride === 'Even') selectedContract = 'DIGITEVEN';
         if (typeOverride === 'Odd') selectedContract = 'DIGITODD';
 
-        executeBulkTrades(executionMode, bulkCount, {
-            symbol: MARKET_MAPPING[market],
-            contract_type: selectedContract,
-            amount: stake,
-            duration,
-            prediction: requiresPrediction ? prediction : undefined,
-        });
+        setTradeLog([]);
+
+        executeBulkTrades(
+            executionMode,
+            bulkCount,
+            {
+                symbol: MARKET_MAPPING[market],
+                contract_type: selectedContract,
+                amount: stake,
+                duration,
+                prediction: requiresPrediction ? prediction : undefined,
+            },
+            handleTradeResult
+        );
     };
 
     return (
@@ -146,6 +162,22 @@ const BulkTrader = () => {
                     Bulk Odd
                 </button>
             </div>
+
+            {/* Live Feedback Strip */}
+            {tradeLog.length > 0 && (
+                <div className="trade-log-strip">
+                    <span>
+                        {tradeLog.filter(t => t?.status === 'success').length} succeeded ·{' '}
+                        {tradeLog.filter(t => t?.status === 'error').length} failed ·{' '}
+                        {tradeLog.filter(t => t?.status === 'pending').length} pending
+                    </span>
+                    {tradeLog.some(t => t?.status === 'error') && (
+                        <span className="last-error">
+                            {tradeLog.filter(t => t?.status === 'error').slice(-1)[0]?.message}
+                        </span>
+                    )}
+                </div>
+            )}
 
             {/* Execution Footer Bar */}
             <div className="footer-control-bar">
