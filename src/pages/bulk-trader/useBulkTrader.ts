@@ -2,6 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { api_base } from '@/external/bot-skeleton/services/api/api-base';
 import { TickData, TradeExecutionMode } from './types';
 
+export interface TradeResult {
+    index: number;
+    status: 'pending' | 'success' | 'error';
+    message: string;
+}
+
 export const useBulkTrader = () => {
     const [isConnected, setIsConnected] = useState<boolean>(false);
     const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
@@ -14,7 +20,6 @@ export const useBulkTrader = () => {
         const checkStatus = () => {
             const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
             
-            // Check multiple places for authorized status
             const hasToken = !!(
                 api_base.token || 
                 api_base.account_info?.token || 
@@ -29,7 +34,6 @@ export const useBulkTrader = () => {
         checkStatus();
         const interval = setInterval(checkStatus, 500);
 
-        // Listen for incoming ticks
         const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
             if (data?.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
@@ -66,7 +70,7 @@ export const useBulkTrader = () => {
             try {
                 await api_base.api.send({ forget: subscriptionIdRef.current });
             } catch (err) {
-                // Ignore cleanup error if already forgotten
+                // Ignore cleanup error if stream was already closed
             }
             subscriptionIdRef.current = null;
         }
@@ -87,10 +91,11 @@ export const useBulkTrader = () => {
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode, 
         count: number, 
-        tradeParams: any
+        tradeParams: any,
+        onResult?: (result: TradeResult) => void
     ) => {
         if (!api_base.api) {
-            console.error('API connection not available.');
+            onResult?.({ index: -1, status: 'error', message: 'No API connection available.' });
             return;
         }
 
@@ -98,8 +103,9 @@ export const useBulkTrader = () => {
 
         for (let i = 0; i < count; i++) {
             setTimeout(async () => {
+                onResult?.({ index: i, status: 'pending', message: 'Sending...' });
+
                 try {
-                    // Deriv direct proposal + buy request payload
                     const req: any = {
                         buy: 1,
                         price: tradeParams.amount,
@@ -118,11 +124,27 @@ export const useBulkTrader = () => {
                         req.parameters.barrier = String(tradeParams.prediction);
                     }
 
-                    console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
                     const response = await api_base.api.send(req);
-                    console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
-                } catch (err) {
-                    console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
+
+                    if (response?.error) {
+                        onResult?.({
+                            index: i,
+                            status: 'error',
+                            message: response.error.message || 'Trade rejected by Deriv.',
+                        });
+                    } else {
+                        onResult?.({
+                            index: i,
+                            status: 'success',
+                            message: `Contract ${response?.buy?.contract_id ?? ''} bought`,
+                        });
+                    }
+                } catch (err: any) {
+                    onResult?.({
+                        index: i,
+                        status: 'error',
+                        message: err?.message || 'Request failed.',
+                    });
                 }
             }, i * delay);
         }
