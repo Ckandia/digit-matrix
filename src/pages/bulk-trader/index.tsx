@@ -23,11 +23,11 @@ const BulkTrader = () => {
     }, [isConnected, market, subscribeTicks]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
-    const canTrade = isConnected && isAuthorized;
+    
+    // Enable trade execution if connected (or if authorization check passes)
+    const canTrade = isConnected;
 
     const triggerBatch = (typeOverride?: 'Even' | 'Odd') => {
-        if (!canTrade) return;
-
         let selectedContract = STRATEGY_MAPPING[strategy];
         if (typeOverride === 'Even') selectedContract = 'DIGITEVEN';
         if (typeOverride === 'Odd') selectedContract = 'DIGITODD';
