@@ -15,7 +15,7 @@ const BulkTrader = () => {
     const [activeButton, setActiveButton] = useState<string | null>(null);
     const [statusMessage, setStatusMessage] = useState<string>('Ready');
 
-    const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
+    const { isConnected, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
     const isRunningRef = useRef<boolean>(false);
 
     useEffect(() => {
@@ -62,8 +62,6 @@ const BulkTrader = () => {
                 
                 setStatusMessage(`Last batch: ${res.successCount} success, ${res.failureCount} failed`);
                 
-                // Short pause between loops if running continuously, or break if single batch loop intended
-                // To maintain continuous toggle behavior until clicked again:
                 await new Promise((r) => setTimeout(r, 1000));
             }
         } catch (err: any) {
@@ -77,14 +75,6 @@ const BulkTrader = () => {
 
     return (
         <div className="bulk-trader-wrapper">
-            {/* Connection Banner */}
-            <div className={`connection-banner ${isConnected ? 'connected' : 'disconnected'}`}>
-                <span>Status: <strong>{isConnected ? (isAuthorized ? `Connected (${accountInfo.loginid || 'Active'})` : 'Connected (Unauthorized)') : 'Disconnected'}</strong></span>
-                {accountInfo.balance !== undefined && (
-                    <span className="balance-info">Balance: <strong>{accountInfo.balance} {accountInfo.currency || 'USD'}</strong></span>
-                )}
-            </div>
-
             <div className="top-grid">
                 {/* Controls Card */}
                 <div className="control-card">
