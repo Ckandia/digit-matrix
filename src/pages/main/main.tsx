@@ -16,50 +16,56 @@ const ChartsPlaceholder = () => (
 );
 
 const Main = () => {
+    // Set default active tab
     const [activeTab, setActiveTab] = useState<'dashboard' | 'bot-builder' | 'charts' | 'tutorials' | 'bulk-trader'>('dashboard');
 
     return (
-        <div className="main-layout">
+        <div className="digit-matrix-main-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100%' }}>
             {/* 
-              Tab Navigation
-              The header containing the Logo and Account Balance has been removed 
-              from here to prevent duplication with your main App shell.
+              Simplified Tab Navigation 
+              Header elements (Logo, Balance) removed to prevent duplication.
+              RiskDisclaimer removed to prevent Vercel build errors.
             */}
-            <div className="app-tabs-nav">
+            <nav className="main-tabs-navigation" style={{ 
+                display: 'flex', 
+                padding: '10px 20px', 
+                backgroundColor: 'var(--color-bg-elevated)', 
+                borderBottom: '1px solid var(--color-border)' 
+            }}>
                 <button 
-                    className={`tab-item ${activeTab === 'dashboard' ? 'active' : ''}`} 
+                    style={{ margin: '0 10px', padding: '8px 16px', background: activeTab === 'dashboard' ? 'var(--color-active)' : 'transparent', color: 'var(--color-text)', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
                     onClick={() => setActiveTab('dashboard')}
                 >
                     Dashboard
                 </button>
                 <button 
-                    className={`tab-item ${activeTab === 'bot-builder' ? 'active' : ''}`} 
+                    style={{ margin: '0 10px', padding: '8px 16px', background: activeTab === 'bot-builder' ? 'var(--color-active)' : 'transparent', color: 'var(--color-text)', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
                     onClick={() => setActiveTab('bot-builder')}
                 >
-                    Bot builder
+                    Bot Builder
                 </button>
                 <button 
-                    className={`tab-item ${activeTab === 'charts' ? 'active' : ''}`} 
+                    style={{ margin: '0 10px', padding: '8px 16px', background: activeTab === 'charts' ? 'var(--color-active)' : 'transparent', color: 'var(--color-text)', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
                     onClick={() => setActiveTab('charts')}
                 >
                     Charts
                 </button>
                 <button 
-                    className={`tab-item ${activeTab === 'tutorials' ? 'active' : ''}`} 
+                    style={{ margin: '0 10px', padding: '8px 16px', background: activeTab === 'tutorials' ? 'var(--color-active)' : 'transparent', color: 'var(--color-text)', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
                     onClick={() => setActiveTab('tutorials')}
                 >
                     Tutorials
                 </button>
                 <button 
-                    className={`tab-item ${activeTab === 'bulk-trader' ? 'active' : ''}`} 
+                    style={{ margin: '0 10px', padding: '8px 16px', background: activeTab === 'bulk-trader' ? 'var(--color-active)' : 'transparent', color: 'var(--color-text)', border: 'none', cursor: 'pointer', borderRadius: '4px' }}
                     onClick={() => setActiveTab('bulk-trader')}
                 >
-                    Bulk trades
+                    Bulk Trades
                 </button>
-            </div>
+            </nav>
 
-            {/* Main Content Area */}
-            <main className="tab-content-wrapper">
+            {/* Main Application Content Area */}
+            <main style={{ flexGrow: 1, overflow: 'auto', position: 'relative' }}>
                 {activeTab === 'dashboard' && <Dashboard />}
                 {activeTab === 'bot-builder' && <BotBuilder />}
                 {activeTab === 'charts' && <ChartsPlaceholder />}
