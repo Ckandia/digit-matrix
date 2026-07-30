@@ -7,42 +7,48 @@ export const useBulkTrader = () => {
     const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
     const [accountInfo, setAccountInfo] = useState<AccountInfo>({});
     const [tickSequence, setTickSequence] = useState<TickData[]>([]);
-    
+
     const activeSymbolRef = useRef<string>('1HZ10V');
     const subscriptionIdRef = useRef<string | null>(null);
+    const isAuthorizedRef = useRef<boolean>(false); // for use inside stable callbacks
 
     useEffect(() => {
         const checkStatus = () => {
-            // Ensure we reference the primary active socket connection from api_base
             const activeApi = api_base.api;
             const hasConnection = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
-            
-            // Check if main session is authorized
+
             const hasToken = !!(
-                api_base.token || 
-                api_base.account_info?.token || 
+                api_base.token ||
+                api_base.account_info?.token ||
                 localStorage.getItem('client.accounts') ||
                 localStorage.getItem('active_loginid')
             );
 
+            const authorized = hasConnection && hasToken;
+
             setIsConnected(hasConnection);
-            setIsAuthorized(hasConnection && hasToken);
+            setIsAuthorized(authorized);
+            isAuthorizedRef.current = authorized;
 
             if (api_base.account_info) {
                 setAccountInfo({
                     loginid: api_base.account_info.loginid || localStorage.getItem('active_loginid') || undefined,
                     balance: api_base.account_info.balance,
                     currency: api_base.account_info.currency || 'USD',
-                    is_authorized: hasConnection && hasToken,
+                    is_authorized: authorized,
                 });
             }
         };
 
         checkStatus();
-        const interval = setInterval(checkStatus, 500);
+        const statusInterval = setInterval(checkStatus, 500);
 
-        // Bind directly to the main api_base message stream to share the active socket
-        const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
+        // The main socket may not exist yet when this effect first runs.
+        // Poll until it does, then bind the listener — and don't leave it unbound forever.
+        let subscription: any;
+        let bindPoll: ReturnType<typeof setInterval> | null = null;
+
+        const handleMessage = ({ data }: any) => {
             if (data?.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
                     if (data.subscription?.id) {
@@ -63,10 +69,27 @@ export const useBulkTrader = () => {
                     setTickSequence((prev) => [...prev.slice(-49), newTick]);
                 }
             }
-        });
+        };
+
+        const tryBind = () => {
+            const activeApi = api_base.api;
+            if (!activeApi) return false;
+            subscription = activeApi.onMessage().subscribe(handleMessage);
+            return true;
+        };
+
+        if (!tryBind()) {
+            bindPoll = setInterval(() => {
+                if (tryBind() && bindPoll) {
+                    clearInterval(bindPoll);
+                    bindPoll = null;
+                }
+            }, 300);
+        }
 
         return () => {
-            clearInterval(interval);
+            clearInterval(statusInterval);
+            if (bindPoll) clearInterval(bindPoll);
             subscription?.unsubscribe();
         };
     }, []);
@@ -74,7 +97,7 @@ export const useBulkTrader = () => {
     const subscribeTicks = useCallback(async (symbol: string) => {
         const activeApi = api_base.api;
         if (!symbol || !activeApi) return;
-        
+
         if (subscriptionIdRef.current) {
             try {
                 await activeApi.send({ forget: subscriptionIdRef.current });
@@ -98,8 +121,8 @@ export const useBulkTrader = () => {
     }, []);
 
     const executeBulkTrades = useCallback(async (
-        mode: TradeExecutionMode, 
-        count: number, 
+        mode: TradeExecutionMode,
+        count: number,
         tradeParams: any
     ): Promise<BulkExecutionResult> => {
         const result: BulkExecutionResult = {
@@ -109,10 +132,14 @@ export const useBulkTrader = () => {
             errors: [],
         };
 
-        // Enforce usage of the main shared api_base instance to ensure account authorization carries over
         const activeApi = api_base.api;
         if (!activeApi) {
             result.errors.push('Main API connection not available.');
+            return result;
+        }
+
+        if (!isAuthorizedRef.current) {
+            result.errors.push('Not authorized on the main account — cannot place trades.');
             return result;
         }
 
@@ -136,17 +163,11 @@ export const useBulkTrader = () => {
                             },
                         };
 
-                        if (accountInfo.loginid) {
-                            req.passthrough = { loginid: accountInfo.loginid };
-                        }
-
                         if (tradeParams.prediction !== undefined) {
                             req.parameters.barrier = String(tradeParams.prediction);
                         }
 
-                        console.log(`[BulkTrader] Firing trade #${i + 1} on main socket`, req);
                         const response = await activeApi.send(req);
-                        console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
 
                         if (response?.error) {
                             result.failureCount++;
@@ -155,7 +176,6 @@ export const useBulkTrader = () => {
                             result.successCount++;
                         }
                     } catch (err: any) {
-                        console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
                         result.failureCount++;
                         result.errors.push(err?.message || `Trade ${i + 1} execution error`);
                     }
