@@ -17,7 +17,7 @@ const ChartsPlaceholder = () => (
 );
 
 const Main = () => {
-    const [activeTab, setActiveTab] = useState<'dashboard' | 'bot-builder' | 'charts' | 'tutorials' | 'bulk-trader'>('bulk-trader');
+    const [activeTab, setActiveTab] = useState<'dashboard' | 'bot-builder' | 'charts' | 'tutorials' | 'bulk-trader'>('dashboard');
     const [isRunning, setIsRunning] = useState<boolean>(false);
     
     // Fallback states for the header balance
@@ -54,7 +54,6 @@ const Main = () => {
 
     const handleRunToggle = () => {
         setIsRunning(!isRunning);
-        // Add direct bot start/stop hook logic here if needed
     };
 
     return (
@@ -65,7 +64,6 @@ const Main = () => {
                     <div className="brand-logo">
                         <span className="logo-icon">D</span>
                         <span className="logo-text">digitmatrix</span>
-                        <span className="powered-by-tag">Powered by Deriv</span>
                     </div>
 
                     <nav className="header-nav">
@@ -103,7 +101,6 @@ const Main = () => {
                 </div>
 
                 <div className="header-right">
-                    {/* Consolidated Single Run / Stop Toggle Button */}
                     <button 
                         className={`btn-main-run ${isRunning ? 'running' : ''}`}
                         onClick={handleRunToggle}
