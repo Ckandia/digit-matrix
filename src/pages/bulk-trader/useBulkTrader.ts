@@ -10,17 +10,46 @@ export const useBulkTrader = () => {
 
     const activeSymbolRef = useRef<string>('1HZ10V');
     const subscriptionIdRef = useRef<string | null>(null);
-    const isAuthorizedRef = useRef<boolean>(false);
 
     useEffect(() => {
-        let subscription: any;
-        let bindInterval: ReturnType<typeof setInterval> | null = null;
-        let authAttempted = false;
+        const checkStatus = () => {
+            const activeApi = api_base.api;
+            const hasConnection = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
 
-        const handleMessage = ({ data }: any) => {
-            if (!data) return;
+            // TEMPORARY DEBUG LOG — remove after we diagnose this
+            console.log('[BulkTrader DEBUG]', {
+                hasApi: !!activeApi,
+                readyState: activeApi?.connection?.readyState,
+                is_authorized: api_base.is_authorized,
+                account_info: api_base.account_info,
+                token: api_base.token,
+            });
 
-            if (data.msg_type === 'tick' && data.tick) {
+            const hasToken = !!(
+                api_base.token ||
+                api_base.account_info?.token ||
+                localStorage.getItem('client.accounts') ||
+                localStorage.getItem('active_loginid')
+            );
+
+            setIsConnected(hasConnection);
+            setIsAuthorized(hasConnection && hasToken);
+
+            if (api_base.account_info) {
+                setAccountInfo({
+                    loginid: api_base.account_info.loginid || localStorage.getItem('active_loginid') || undefined,
+                    balance: api_base.account_info.balance,
+                    currency: api_base.account_info.currency || 'USD',
+                    is_authorized: hasConnection && hasToken,
+                });
+            }
+        };
+
+        checkStatus();
+        const interval = setInterval(checkStatus, 500);
+
+        const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
+            if (data?.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
                     if (data.subscription?.id) {
                         subscriptionIdRef.current = data.subscription.id;
@@ -40,86 +69,10 @@ export const useBulkTrader = () => {
                     setTickSequence((prev) => [...prev.slice(-49), newTick]);
                 }
             }
-
-            if (data.msg_type === 'authorize') {
-                if (!data.error) {
-                    isAuthorizedRef.current = true;
-                    setIsAuthorized(true);
-                    if (data.authorize) {
-                        setAccountInfo({
-                            loginid: data.authorize.loginid,
-                            balance: data.authorize.balance,
-                            currency: data.authorize.currency,
-                            is_authorized: true,
-                        });
-                    }
-                } else {
-                    isAuthorizedRef.current = false;
-                    setIsAuthorized(false);
-                }
-            }
-        };
-
-        const initSocketAndAuth = async () => {
-            const activeApi = api_base.api;
-            if (!activeApi) return;
-
-            const wsReady = activeApi.connection?.readyState === WebSocket.OPEN;
-            setIsConnected(wsReady);
-
-            if (wsReady && !authAttempted) {
-                authAttempted = true;
-                try {
-                    const activeLoginid = localStorage.getItem('active_loginid');
-                    let token = api_base.token;
-
-                    if (!token && activeLoginid) {
-                        const clientAccountsStr = localStorage.getItem('client.accounts');
-                        if (clientAccountsStr) {
-                            const accounts = JSON.parse(clientAccountsStr);
-                            token = accounts[activeLoginid]?.token;
-                        }
-                    }
-
-                    if (token) {
-                        await activeApi.send({ authorize: token });
-                    }
-                } catch (err) {
-                    console.error('BulkTrader authorization error:', err);
-                }
-            }
-        };
-
-        const tryBindAndAuth = () => {
-            const activeApi = api_base.api;
-            if (!activeApi) return false;
-
-            subscription = activeApi.onMessage().subscribe(handleMessage);
-            initSocketAndAuth();
-            return true;
-        };
-
-        if (!tryBindAndAuth()) {
-            bindInterval = setInterval(() => {
-                if (tryBindAndAuth() && bindInterval) {
-                    clearInterval(bindInterval);
-                    bindInterval = null;
-                }
-            }, 300);
-        }
-
-        const statusInterval = setInterval(() => {
-            const activeApi = api_base.api;
-            const wsReady = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
-            setIsConnected(wsReady);
-            if (wsReady && !isAuthorizedRef.current && !authAttempted) {
-                initSocketAndAuth();
-            }
-        }, 1000);
+        });
 
         return () => {
-            clearInterval(statusInterval);
-            if (bindInterval) clearInterval(bindInterval);
+            clearInterval(interval);
             subscription?.unsubscribe();
         };
     }, []);
@@ -168,11 +121,6 @@ export const useBulkTrader = () => {
             return result;
         }
 
-        if (!isAuthorizedRef.current) {
-            result.errors.push('Not authorized on the main account — cannot place trades.');
-            return result;
-        }
-
         const delay = mode === 'FAST' ? 50 : 300;
 
         for (let i = 0; i < count; i++) {
@@ -193,11 +141,17 @@ export const useBulkTrader = () => {
                             },
                         };
 
+                        if (accountInfo.loginid) {
+                            req.passthrough = { loginid: accountInfo.loginid };
+                        }
+
                         if (tradeParams.prediction !== undefined) {
                             req.parameters.barrier = String(tradeParams.prediction);
                         }
 
+                        console.log(`[BulkTrader] Firing trade #${i + 1} on main socket`, req);
                         const response = await activeApi.send(req);
+                        console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
 
                         if (response?.error) {
                             result.failureCount++;
@@ -206,6 +160,7 @@ export const useBulkTrader = () => {
                             result.successCount++;
                         }
                     } catch (err: any) {
+                        console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
                         result.failureCount++;
                         result.errors.push(err?.message || `Trade ${i + 1} execution error`);
                     }
