@@ -136,11 +136,12 @@ export const useBulkTrader = () => {
 
                         console.log(`[BulkTrader] Requesting proposal #${i + 1}`, proposalReq);
                         const proposalResponse = await activeApi.send(proposalReq);
-                        console.log(`[BulkTrader] Proposal #${i + 1} response:`, proposalResponse);
+                        console.log(`[BulkTrader] FULL PROPOSAL RESPONSE #${i + 1}:`, JSON.stringify(proposalResponse, null, 2));
 
                         if (proposalResponse?.error) {
                             result.failureCount++;
                             result.errors.push(proposalResponse.error.message || `Proposal ${i + 1} failed`);
+                            console.log(`[BulkTrader] FULL PROPOSAL ERROR #${i + 1}:`, JSON.stringify(proposalResponse.error, null, 2));
                             result.totalProcessed++;
                             resolve();
                             return;
@@ -152,6 +153,7 @@ export const useBulkTrader = () => {
                         if (!proposalId) {
                             result.failureCount++;
                             result.errors.push(`Proposal ${i + 1} returned no id`);
+                            console.log(`[BulkTrader] NO PROPOSAL ID #${i + 1} — full response above`);
                             result.totalProcessed++;
                             resolve();
                             return;
@@ -169,11 +171,12 @@ export const useBulkTrader = () => {
 
                         console.log(`[BulkTrader] Firing buy #${i + 1}`, buyReq);
                         const buyResponse = await activeApi.send(buyReq);
-                        console.log(`[BulkTrader] Buy #${i + 1} response:`, buyResponse);
+                        console.log(`[BulkTrader] FULL BUY RESPONSE #${i + 1}:`, JSON.stringify(buyResponse, null, 2));
 
                         if (buyResponse?.error) {
                             result.failureCount++;
                             result.errors.push(buyResponse.error.message || `Trade ${i + 1} failed`);
+                            console.log(`[BulkTrader] FULL BUY ERROR #${i + 1}:`, JSON.stringify(buyResponse.error, null, 2));
                         } else {
                             result.successCount++;
                         }
