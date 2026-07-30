@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { MARKET_MAPPING, STRATEGY_MAPPING, TradeExecutionMode } from './types';
@@ -12,9 +12,11 @@ const BulkTrader = () => {
     const [bulkCount, setBulkCount] = useState<number>(10);
     const [prediction, setPrediction] = useState<number>(1);
     const [executionMode, setExecutionMode] = useState<TradeExecutionMode>('FAST');
-    const [isRunning, setIsRunning] = useState<boolean>(false);
+    const [activeButton, setActiveButton] = useState<string | null>(null);
+    const [statusMessage, setStatusMessage] = useState<string>('Ready');
 
-    const { isConnected, isAuthorized, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
+    const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
+    const isRunningRef = useRef<boolean>(false);
 
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
@@ -23,33 +25,73 @@ const BulkTrader = () => {
     }, [isConnected, market, subscribeTicks]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
-    
-    // Enable trade execution if connected (or if authorization check passes)
     const canTrade = isConnected;
 
-    const triggerBatch = (typeOverride?: 'Even' | 'Odd') => {
+    const stopRunning = useCallback(() => {
+        isRunningRef.current = false;
+        setActiveButton(null);
+        setStatusMessage('Stopped');
+    }, []);
+
+    const triggerBatchLoop = useCallback(async (buttonKey: string, typeOverride?: 'Even' | 'Odd') => {
+        if (isRunningRef.current) {
+            stopRunning();
+            return;
+        }
+
+        isRunningRef.current = true;
+        setActiveButton(buttonKey);
+        setStatusMessage(`Running ${buttonKey}...`);
+
         let selectedContract = STRATEGY_MAPPING[strategy];
         if (typeOverride === 'Even') selectedContract = 'DIGITEVEN';
         if (typeOverride === 'Odd') selectedContract = 'DIGITODD';
 
-        executeBulkTrades(executionMode, bulkCount, {
+        const tradeParams = {
             symbol: MARKET_MAPPING[market],
             contract_type: selectedContract,
             amount: stake,
             duration,
             prediction: requiresPrediction ? prediction : undefined,
-        });
-    };
+        };
+
+        try {
+            while (isRunningRef.current) {
+                const res = await executeBulkTrades(executionMode, bulkCount, tradeParams);
+                if (!isRunningRef.current) break;
+                
+                setStatusMessage(`Last batch: ${res.successCount} success, ${res.failureCount} failed`);
+                
+                // Short pause between loops if running continuously, or break if single batch loop intended
+                // To maintain continuous toggle behavior until clicked again:
+                await new Promise((r) => setTimeout(r, 1000));
+            }
+        } catch (err: any) {
+            setStatusMessage(`Error: ${err?.message || 'Execution failed'}`);
+        } finally {
+            if (activeButton === buttonKey) {
+                stopRunning();
+            }
+        }
+    }, [strategy, market, stake, duration, requiresPrediction, prediction, executionMode, bulkCount, executeBulkTrades, stopRunning, activeButton]);
 
     return (
         <div className="bulk-trader-wrapper">
+            {/* Connection Banner */}
+            <div className={`connection-banner ${isConnected ? 'connected' : 'disconnected'}`}>
+                <span>Status: <strong>{isConnected ? (isAuthorized ? `Connected (${accountInfo.loginid || 'Active'})` : 'Connected (Unauthorized)') : 'Disconnected'}</strong></span>
+                {accountInfo.balance !== undefined && (
+                    <span className="balance-info">Balance: <strong>{accountInfo.balance} {accountInfo.currency || 'USD'}</strong></span>
+                )}
+            </div>
+
             <div className="top-grid">
                 {/* Controls Card */}
                 <div className="control-card">
                     <div className="form-row">
                         <div className="form-group">
                             <label>MARKET</label>
-                            <select value={market} onChange={(e) => setMarket(e.target.value)}>
+                            <select value={market} onChange={(e) => setMarket(e.target.value)} disabled={isRunningRef.current}>
                                 {Object.keys(MARKET_MAPPING).map((m) => (
                                     <option key={m} value={m}>{m}</option>
                                 ))}
@@ -57,7 +99,7 @@ const BulkTrader = () => {
                         </div>
                         <div className="form-group">
                             <label>STRATEGY</label>
-                            <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+                            <select value={strategy} onChange={(e) => setStrategy(e.target.value)} disabled={isRunningRef.current}>
                                 {Object.keys(STRATEGY_MAPPING).map((s) => (
                                     <option key={s} value={s}>{s}</option>
                                 ))}
@@ -74,6 +116,7 @@ const BulkTrader = () => {
                                 min="0.35" 
                                 value={stake} 
                                 onChange={(e) => setStake(Number(e.target.value))} 
+                                disabled={isRunningRef.current}
                             />
                         </div>
                         {requiresPrediction && (
@@ -85,6 +128,7 @@ const BulkTrader = () => {
                                     max="9" 
                                     value={prediction} 
                                     onChange={(e) => setPrediction(Number(e.target.value))} 
+                                    disabled={isRunningRef.current}
                                 />
                             </div>
                         )}
@@ -99,6 +143,7 @@ const BulkTrader = () => {
                                 max="10" 
                                 value={duration} 
                                 onChange={(e) => setDuration(Number(e.target.value))} 
+                                disabled={isRunningRef.current}
                             />
                         </div>
                         <div className="form-group">
@@ -109,6 +154,7 @@ const BulkTrader = () => {
                                 max="50" 
                                 value={bulkCount} 
                                 onChange={(e) => setBulkCount(Number(e.target.value))} 
+                                disabled={isRunningRef.current}
                             />
                         </div>
                     </div>
@@ -123,38 +169,35 @@ const BulkTrader = () => {
             {/* Bulk Action Controls */}
             <div className="action-pad-card">
                 <button 
-                    className="btn-action-even" 
-                    onClick={() => triggerBatch('Even')}
-                    disabled={!canTrade}
+                    className={`btn-action-even ${activeButton === 'Even' ? 'running' : ''}`} 
+                    onClick={() => triggerBatchLoop('Even', 'Even')}
+                    disabled={!canTrade || (activeButton !== null && activeButton !== 'Even')}
                 >
                     <span className="icon">⧈</span>
-                    Bulk Even
+                    {activeButton === 'Even' ? 'Stop Even' : 'Bulk Even'}
                 </button>
                 <button 
-                    className="btn-action-ai" 
-                    onClick={() => triggerBatch()}
-                    disabled={!canTrade}
+                    className={`btn-action-ai ${activeButton === 'AI' ? 'running' : ''}`} 
+                    onClick={() => triggerBatchLoop('AI')}
+                    disabled={!canTrade || (activeButton !== null && activeButton !== 'AI')}
                 >
-                    Bulk AI Entry
+                    {activeButton === 'AI' ? 'Stop AI' : 'Bulk AI Entry'}
                 </button>
                 <button 
-                    className="btn-action-odd" 
-                    onClick={() => triggerBatch('Odd')}
-                    disabled={!canTrade}
+                    className={`btn-action-odd ${activeButton === 'Odd' ? 'running' : ''}`} 
+                    onClick={() => triggerBatchLoop('Odd', 'Odd')}
+                    disabled={!canTrade || (activeButton !== null && activeButton !== 'Odd')}
                 >
                     <span className="icon">▲</span>
-                    Bulk Odd
+                    {activeButton === 'Odd' ? 'Stop Odd' : 'Bulk Odd'}
                 </button>
             </div>
 
             {/* Execution Footer Bar */}
             <div className="footer-control-bar">
-                <button 
-                    className={`btn-run ${isRunning ? 'running' : ''}`}
-                    onClick={() => setIsRunning(!isRunning)}
-                >
-                    {isRunning ? 'Stop' : '▶ Run'}
-                </button>
+                <div className="status-pill">
+                    <span>Status: <strong>{statusMessage}</strong></span>
+                </div>
                 <div className="execution-pill">
                     <span>Execution <strong>{executionMode}</strong></span>
                     <label className="switch">
