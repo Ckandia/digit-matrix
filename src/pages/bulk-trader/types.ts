@@ -50,3 +50,17 @@ export interface TradePayload {
     duration: number;
     prediction?: number;
 }
+
+export interface AccountInfo {
+    loginid?: string;
+    balance?: number;
+    currency?: string;
+    is_authorized?: boolean;
+}
+
+export interface BulkExecutionResult {
+    successCount: number;
+    failureCount: number;
+    totalProcessed: number;
+    errors: string[];
+}
