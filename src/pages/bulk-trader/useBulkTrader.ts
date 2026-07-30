@@ -13,8 +13,11 @@ export const useBulkTrader = () => {
 
     useEffect(() => {
         const checkStatus = () => {
-            const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
+            // Ensure we reference the primary active socket connection from api_base
+            const activeApi = api_base.api;
+            const hasConnection = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
             
+            // Check if main session is authorized
             const hasToken = !!(
                 api_base.token || 
                 api_base.account_info?.token || 
@@ -38,6 +41,7 @@ export const useBulkTrader = () => {
         checkStatus();
         const interval = setInterval(checkStatus, 500);
 
+        // Bind directly to the main api_base message stream to share the active socket
         const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
             if (data?.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
@@ -68,11 +72,12 @@ export const useBulkTrader = () => {
     }, []);
 
     const subscribeTicks = useCallback(async (symbol: string) => {
-        if (!symbol || !api_base.api) return;
+        const activeApi = api_base.api;
+        if (!symbol || !activeApi) return;
         
         if (subscriptionIdRef.current) {
             try {
-                await api_base.api.send({ forget: subscriptionIdRef.current });
+                await activeApi.send({ forget: subscriptionIdRef.current });
             } catch (err) {
                 // Ignore cleanup error if already forgotten
             }
@@ -83,12 +88,12 @@ export const useBulkTrader = () => {
         setTickSequence([]);
 
         try {
-            await api_base.api.send({
+            await activeApi.send({
                 ticks: symbol,
                 subscribe: 1
             });
         } catch (err) {
-            console.error('Error subscribing to ticks on shared socket:', err);
+            console.error('Error subscribing to ticks on main shared socket:', err);
         }
     }, []);
 
@@ -104,8 +109,10 @@ export const useBulkTrader = () => {
             errors: [],
         };
 
-        if (!api_base.api) {
-            result.errors.push('API connection not available.');
+        // Enforce usage of the main shared api_base instance to ensure account authorization carries over
+        const activeApi = api_base.api;
+        if (!activeApi) {
+            result.errors.push('Main API connection not available.');
             return result;
         }
 
@@ -122,19 +129,23 @@ export const useBulkTrader = () => {
                                 amount: tradeParams.amount,
                                 basis: 'stake',
                                 contract_type: tradeParams.contract_type,
-                                currency: 'USD',
+                                currency: accountInfo.currency || 'USD',
                                 duration: tradeParams.duration,
                                 duration_unit: 't',
                                 symbol: tradeParams.symbol,
                             },
                         };
 
+                        if (accountInfo.loginid) {
+                            req.passthrough = { loginid: accountInfo.loginid };
+                        }
+
                         if (tradeParams.prediction !== undefined) {
                             req.parameters.barrier = String(tradeParams.prediction);
                         }
 
-                        console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
-                        const response = await api_base.api.send(req);
+                        console.log(`[BulkTrader] Firing trade #${i + 1} on main socket`, req);
+                        const response = await activeApi.send(req);
                         console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
 
                         if (response?.error) {
@@ -155,7 +166,7 @@ export const useBulkTrader = () => {
         }
 
         return result;
-    }, []);
+    }, [accountInfo]);
 
     return {
         isConnected,
