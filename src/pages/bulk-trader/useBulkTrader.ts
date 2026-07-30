@@ -10,46 +10,17 @@ export const useBulkTrader = () => {
 
     const activeSymbolRef = useRef<string>('1HZ10V');
     const subscriptionIdRef = useRef<string | null>(null);
-    const isAuthorizedRef = useRef<boolean>(false); // for use inside stable callbacks
+    const isAuthorizedRef = useRef<boolean>(false);
 
     useEffect(() => {
-        const checkStatus = () => {
-            const activeApi = api_base.api;
-            const hasConnection = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
-
-            const hasToken = !!(
-                api_base.token ||
-                api_base.account_info?.token ||
-                localStorage.getItem('client.accounts') ||
-                localStorage.getItem('active_loginid')
-            );
-
-            const authorized = hasConnection && hasToken;
-
-            setIsConnected(hasConnection);
-            setIsAuthorized(authorized);
-            isAuthorizedRef.current = authorized;
-
-            if (api_base.account_info) {
-                setAccountInfo({
-                    loginid: api_base.account_info.loginid || localStorage.getItem('active_loginid') || undefined,
-                    balance: api_base.account_info.balance,
-                    currency: api_base.account_info.currency || 'USD',
-                    is_authorized: authorized,
-                });
-            }
-        };
-
-        checkStatus();
-        const statusInterval = setInterval(checkStatus, 500);
-
-        // The main socket may not exist yet when this effect first runs.
-        // Poll until it does, then bind the listener — and don't leave it unbound forever.
         let subscription: any;
-        let bindPoll: ReturnType<typeof setInterval> | null = null;
+        let bindInterval: ReturnType<typeof setInterval> | null = null;
+        let authAttempted = false;
 
         const handleMessage = ({ data }: any) => {
-            if (data?.msg_type === 'tick' && data.tick) {
+            if (!data) return;
+
+            if (data.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
                     if (data.subscription?.id) {
                         subscriptionIdRef.current = data.subscription.id;
@@ -69,27 +40,86 @@ export const useBulkTrader = () => {
                     setTickSequence((prev) => [...prev.slice(-49), newTick]);
                 }
             }
+
+            if (data.msg_type === 'authorize') {
+                if (!data.error) {
+                    isAuthorizedRef.current = true;
+                    setIsAuthorized(true);
+                    if (data.authorize) {
+                        setAccountInfo({
+                            loginid: data.authorize.loginid,
+                            balance: data.authorize.balance,
+                            currency: data.authorize.currency,
+                            is_authorized: true,
+                        });
+                    }
+                } else {
+                    isAuthorizedRef.current = false;
+                    setIsAuthorized(false);
+                }
+            }
         };
 
-        const tryBind = () => {
+        const initSocketAndAuth = async () => {
+            const activeApi = api_base.api;
+            if (!activeApi) return;
+
+            const wsReady = activeApi.connection?.readyState === WebSocket.OPEN;
+            setIsConnected(wsReady);
+
+            if (wsReady && !authAttempted) {
+                authAttempted = true;
+                try {
+                    const activeLoginid = localStorage.getItem('active_loginid');
+                    let token = api_base.token;
+
+                    if (!token && activeLoginid) {
+                        const clientAccountsStr = localStorage.getItem('client.accounts');
+                        if (clientAccountsStr) {
+                            const accounts = JSON.parse(clientAccountsStr);
+                            token = accounts[activeLoginid]?.token;
+                        }
+                    }
+
+                    if (token) {
+                        await activeApi.send({ authorize: token });
+                    }
+                } catch (err) {
+                    console.error('BulkTrader authorization error:', err);
+                }
+            }
+        };
+
+        const tryBindAndAuth = () => {
             const activeApi = api_base.api;
             if (!activeApi) return false;
+
             subscription = activeApi.onMessage().subscribe(handleMessage);
+            initSocketAndAuth();
             return true;
         };
 
-        if (!tryBind()) {
-            bindPoll = setInterval(() => {
-                if (tryBind() && bindPoll) {
-                    clearInterval(bindPoll);
-                    bindPoll = null;
+        if (!tryBindAndAuth()) {
+            bindInterval = setInterval(() => {
+                if (tryBindAndAuth() && bindInterval) {
+                    clearInterval(bindInterval);
+                    bindInterval = null;
                 }
             }, 300);
         }
 
+        const statusInterval = setInterval(() => {
+            const activeApi = api_base.api;
+            const wsReady = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
+            setIsConnected(wsReady);
+            if (wsReady && !isAuthorizedRef.current && !authAttempted) {
+                initSocketAndAuth();
+            }
+        }, 1000);
+
         return () => {
             clearInterval(statusInterval);
-            if (bindPoll) clearInterval(bindPoll);
+            if (bindInterval) clearInterval(bindInterval);
             subscription?.unsubscribe();
         };
     }, []);
