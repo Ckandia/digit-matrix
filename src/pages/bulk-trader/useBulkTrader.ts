@@ -1,44 +1,39 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api_base } from '@/external/bot-skeleton/services/api/api-base';
-import { TickData, TradeExecutionMode, AccountInfo, BulkExecutionResult } from './types';
+import { TickData, TradeExecutionMode } from './types';
+
+export interface BulkTraderAccountInfo {
+    loginid?: string;
+    currency?: string;
+    balance?: number;
+}
 
 export const useBulkTrader = () => {
     const [isConnected, setIsConnected] = useState<boolean>(false);
     const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
-    const [accountInfo, setAccountInfo] = useState<AccountInfo>({});
+    const [accountInfo, setAccountInfo] = useState<BulkTraderAccountInfo | null>(null);
     const [tickSequence, setTickSequence] = useState<TickData[]>([]);
-
+    
     const activeSymbolRef = useRef<string>('1HZ10V');
     const subscriptionIdRef = useRef<string | null>(null);
 
     useEffect(() => {
         const checkStatus = () => {
-            const activeApi = api_base.api;
-            const hasConnection = !!activeApi && activeApi.connection?.readyState === WebSocket.OPEN;
+            const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
 
-            const hasToken = !!(
-                api_base.token ||
-                api_base.account_info?.token ||
-                localStorage.getItem('client.accounts') ||
-                localStorage.getItem('active_loginid')
-            );
+            // api_base.is_authorized is the single source of truth the rest of the app
+            // (dashboard, bot-builder) relies on once the OAuth/token authorize call succeeds.
+            const authorized = !!api_base.is_authorized;
 
             setIsConnected(hasConnection);
-            setIsAuthorized(hasConnection && hasToken);
-
-            if (api_base.account_info) {
-                setAccountInfo({
-                    loginid: api_base.account_info.loginid || localStorage.getItem('active_loginid') || undefined,
-                    balance: api_base.account_info.balance,
-                    currency: api_base.account_info.currency || 'USD',
-                    is_authorized: hasConnection && hasToken,
-                });
-            }
+            setIsAuthorized(authorized);
+            setAccountInfo(authorized ? (api_base.account_info as BulkTraderAccountInfo) : null);
         };
 
         checkStatus();
         const interval = setInterval(checkStatus, 500);
 
+        // Listen for incoming ticks
         const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
             if (data?.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
@@ -46,8 +41,30 @@ export const useBulkTrader = () => {
                         subscriptionIdRef.current = data.subscription.id;
                     }
 
-                    const priceStr = data.tick.quote.toString();
-                    const lastDigit = parseInt(priceStr.slice(-1), 10);
+                    // Each market has its own decimal precision (pip_size) — e.g. Vol 10
+                    // quotes 3 decimals, Vol 100 quotes 2, Step Index quotes 1. Using
+                    // quote.toString() directly is unreliable because JS drops trailing
+                    // zeros (1.10000 -> "1.1"), silently corrupting the last digit.
+                    // api_base.pip_sizes (populated from active_symbols) gives the real
+                    // decimal count per symbol; toFixed() to that count is the correct way
+                    // to reconstruct the digit exactly as Deriv's own digit contracts see it.
+                    const pipSizes = (api_base as any).pip_sizes as Record<string, number> | undefined;
+                    const knownDecimals = pipSizes?.[data.tick.symbol];
+                    const decimalPlaces =
+                        typeof knownDecimals === 'number'
+                            ? knownDecimals
+                            : (() => {
+                                  // Fallback while active_symbols hasn't loaded yet — infer
+                                  // from the raw quote's own string. Can undercount if
+                                  // trailing zeros were already dropped, but only applies
+                                  // for the brief window before pip_sizes is populated.
+                                  const str = data.tick.quote.toString();
+                                  const dot = str.indexOf('.');
+                                  return dot === -1 ? 0 : str.length - dot - 1;
+                              })();
+
+                    const formattedQuote = Number(data.tick.quote).toFixed(decimalPlaces);
+                    const lastDigit = parseInt(formattedQuote.slice(-1), 10);
                     const isEven = lastDigit % 2 === 0;
 
                     const newTick: TickData = {
@@ -69,12 +86,11 @@ export const useBulkTrader = () => {
     }, []);
 
     const subscribeTicks = useCallback(async (symbol: string) => {
-        const activeApi = api_base.api;
-        if (!symbol || !activeApi) return;
-
+        if (!symbol || !api_base.api) return;
+        
         if (subscriptionIdRef.current) {
             try {
-                await activeApi.send({ forget: subscriptionIdRef.current });
+                await api_base.api.send({ forget: subscriptionIdRef.current });
             } catch (err) {
                 // Ignore cleanup error if already forgotten
             }
@@ -85,114 +101,67 @@ export const useBulkTrader = () => {
         setTickSequence([]);
 
         try {
-            await activeApi.send({
+            await api_base.api.send({
                 ticks: symbol,
                 subscribe: 1
             });
         } catch (err) {
-            console.error('Error subscribing to ticks on main shared socket:', err);
+            console.error('Error subscribing to ticks on shared socket:', err);
         }
     }, []);
 
-    const executeBulkTrades = useCallback(async (
-        mode: TradeExecutionMode,
-        count: number,
-        tradeParams: any
-    ): Promise<BulkExecutionResult> => {
-        const result: BulkExecutionResult = {
-            successCount: 0,
-            failureCount: 0,
-            totalProcessed: 0,
-            errors: [],
-        };
-
-        const activeApi = api_base.api;
-        if (!activeApi) {
-            result.errors.push('Main API connection not available.');
-            return result;
+    const executeBulkTrades = useCallback((
+        mode: TradeExecutionMode, 
+        count: number, 
+        tradeParams: any,
+        onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void
+    ) => {
+        if (!api_base.api || !api_base.is_authorized) {
+            console.error('[BulkTrader] Cannot trade — not connected/authorized to a Deriv account.');
+            onTradeResult?.({ index: -1, success: false, error: 'Not connected to your Deriv account.' });
+            return;
         }
 
         const delay = mode === 'FAST' ? 50 : 300;
 
         for (let i = 0; i < count; i++) {
-            await new Promise<void>((resolve) => {
-                setTimeout(async () => {
-                    try {
-                        // Step 1: Request a proposal (price quote) for this exact contract
-                        const proposalReq: any = {
-                            proposal: 1,
+            setTimeout(async () => {
+                try {
+                    // Deriv direct proposal + buy request payload
+                    const req: any = {
+                        buy: 1,
+                        price: tradeParams.amount,
+                        parameters: {
                             amount: tradeParams.amount,
                             basis: 'stake',
                             contract_type: tradeParams.contract_type,
-                            currency: accountInfo.currency || 'USD',
+                            currency: 'USD',
                             duration: tradeParams.duration,
                             duration_unit: 't',
                             symbol: tradeParams.symbol,
-                        };
-
-                        if (tradeParams.prediction !== undefined) {
-                            proposalReq.barrier = String(tradeParams.prediction);
                         }
+                    };
 
-                        console.log(`[BulkTrader] Requesting proposal #${i + 1}`, proposalReq);
-                        const proposalResponse = await activeApi.send(proposalReq);
-                        console.log(`[BulkTrader] FULL PROPOSAL RESPONSE #${i + 1}:`, JSON.stringify(proposalResponse, null, 2));
-
-                        if (proposalResponse?.error) {
-                            result.failureCount++;
-                            result.errors.push(proposalResponse.error.message || `Proposal ${i + 1} failed`);
-                            console.log(`[BulkTrader] FULL PROPOSAL ERROR #${i + 1}:`, JSON.stringify(proposalResponse.error, null, 2));
-                            result.totalProcessed++;
-                            resolve();
-                            return;
-                        }
-
-                        const proposalId = proposalResponse?.proposal?.id;
-                        const askPrice = proposalResponse?.proposal?.ask_price;
-
-                        if (!proposalId) {
-                            result.failureCount++;
-                            result.errors.push(`Proposal ${i + 1} returned no id`);
-                            console.log(`[BulkTrader] NO PROPOSAL ID #${i + 1} — full response above`);
-                            result.totalProcessed++;
-                            resolve();
-                            return;
-                        }
-
-                        // Step 2: Buy using the proposal id
-                        const buyReq: any = {
-                            buy: proposalId,
-                            price: askPrice ?? tradeParams.amount,
-                        };
-
-                        if (accountInfo.loginid) {
-                            buyReq.passthrough = { loginid: accountInfo.loginid };
-                        }
-
-                        console.log(`[BulkTrader] Firing buy #${i + 1}`, buyReq);
-                        const buyResponse = await activeApi.send(buyReq);
-                        console.log(`[BulkTrader] FULL BUY RESPONSE #${i + 1}:`, JSON.stringify(buyResponse, null, 2));
-
-                        if (buyResponse?.error) {
-                            result.failureCount++;
-                            result.errors.push(buyResponse.error.message || `Trade ${i + 1} failed`);
-                            console.log(`[BulkTrader] FULL BUY ERROR #${i + 1}:`, JSON.stringify(buyResponse.error, null, 2));
-                        } else {
-                            result.successCount++;
-                        }
-                    } catch (err: any) {
-                        console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
-                        result.failureCount++;
-                        result.errors.push(err?.message || `Trade ${i + 1} execution error`);
+                    if (tradeParams.prediction !== undefined) {
+                        req.parameters.barrier = String(tradeParams.prediction);
                     }
-                    result.totalProcessed++;
-                    resolve();
-                }, i * delay);
-            });
-        }
 
-        return result;
-    }, [accountInfo]);
+                    console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
+                    const response: any = await api_base.api.send(req);
+                    console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
+
+                    if (response?.error) {
+                        onTradeResult?.({ index: i, success: false, error: response.error.message || 'Trade failed' });
+                    } else {
+                        onTradeResult?.({ index: i, success: true });
+                    }
+                } catch (err: any) {
+                    console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
+                    onTradeResult?.({ index: i, success: false, error: err?.message || 'Trade failed' });
+                }
+            }, i * delay);
+        }
+    }, []);
 
     return {
         isConnected,
