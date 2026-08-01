@@ -127,9 +127,13 @@ export const useBulkTrader = () => {
         for (let i = 0; i < count; i++) {
             setTimeout(async () => {
                 try {
-                    // Deriv direct proposal + buy request payload
+                    // Deriv direct proposal + buy request payload.
+                    // IMPORTANT: the API expects "underlying_symbol" in parameters, not
+                    // "symbol" — using the wrong key here causes every buy to be silently
+                    // rejected (confirmed against the working Purchase.js -> tradeOptionToBuy
+                    // helper used by the rest of this app).
                     const req: any = {
-                        buy: 1,
+                        buy: '1',
                         price: tradeParams.amount,
                         parameters: {
                             amount: tradeParams.amount,
@@ -138,7 +142,7 @@ export const useBulkTrader = () => {
                             currency: 'USD',
                             duration: tradeParams.duration,
                             duration_unit: 't',
-                            symbol: tradeParams.symbol,
+                            underlying_symbol: tradeParams.symbol,
                         }
                     };
 
