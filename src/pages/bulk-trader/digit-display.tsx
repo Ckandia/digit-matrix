@@ -3,9 +3,10 @@ import { TickData } from './types';
 
 interface DigitDisplayProps {
     ticks: TickData[];
+    mode?: 'even_odd' | 'digit';
 }
 
-const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks }) => {
+const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks, mode = 'even_odd' }) => {
     const recentTicks = ticks.slice(-50);
     
     const counts = new Array(10).fill(0);
@@ -37,15 +38,19 @@ const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks }) => {
                 })}
             </div>
 
-            {/* Sequence Grid (E and O) */}
+            {/* Sequence Grid — shows E/O for Even/Odd strategies, actual digit values (0-9) for Matches/Differs/Over/Under */}
             <div className="sequence-grid-wrapper">
                 <div className="grid-container">
                     {recentTicks.map((tick, index) => (
                         <span 
                             key={`${tick.epoch}-${index}`} 
-                            className={`seq-cell ${tick.type === 'E' ? 'E' : 'O'}`}
+                            className={
+                                mode === 'even_odd'
+                                    ? `seq-cell ${tick.type === 'E' ? 'E' : 'O'}`
+                                    : `seq-cell seq-digit seq-digit-${tick.digit}`
+                            }
                         >
-                            {tick.type}
+                            {mode === 'even_odd' ? tick.type : tick.digit}
                         </span>
                     ))}
                 </div>
