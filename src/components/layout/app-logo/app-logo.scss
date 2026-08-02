@@ -35,15 +35,35 @@
         line-height: 1;
     }
 
-    &__logo-text {
+    // Column group holding the app name + "Powered by Deriv" subtitle.
+    &__logo-text-group {
         margin-left: 1.2rem;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    &__logo-text {
         color: var(--text-general);
         font-weight: 600;
         font-size: 1.8rem;
+        line-height: 1.2;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
         max-width: 220px;
+    }
+
+    // Required "Powered by Deriv" disclosure for third-party apps built on the
+    // Deriv API, shown directly under the app name.
+    &__logo-subtitle {
+        color: var(--text-less-prominent, #94a3b8);
+        font-weight: 600;
+        font-size: 1rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        line-height: 1.2;
+        white-space: nowrap;
     }
 
     // On mobile the mark sits next to the hamburger and the account section, so
@@ -55,7 +75,7 @@
             padding-inline-end: 0.8rem;
         }
 
-        .app-header__logo-text {
+        .app-header__logo-text-group {
             display: none;
         }
     }
@@ -63,7 +83,7 @@
 
 // The same mark inside the mobile drawer header shows the app name (the header's
 // --mobile rule hides it, but the drawer has room) and can use the full available width.
-.mobile-menu__header .app-header__logo-text {
-    display: block;
+.mobile-menu__header .app-header__logo-text-group {
+    display: flex;
     max-width: 180px;
 }
