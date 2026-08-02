@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api_base } from '@/external/bot-skeleton/services/api/api-base';
+import { observer as globalObserver } from '@/external/bot-skeleton/utils/observer';
 import { TickData, TradeExecutionMode } from './types';
 
 export interface BulkTraderAccountInfo {
@@ -110,6 +111,45 @@ export const useBulkTrader = () => {
         }
     }, []);
 
+    // After a successful buy, subscribe to proposal_open_contract for that
+    // specific contract and re-broadcast every update as 'bot.contract' — the
+    // exact same event the bot engine's own OpenContract tracker emits
+    // (see external/bot-skeleton/.../trade/OpenContract.js). The Transactions,
+    // Summary, and Journal panels already listen for this event, so trades fired
+    // from the Bulk Trader show up there automatically with zero duplicate UI/state.
+    const trackContract = useCallback((contractId: number) => {
+        if (!api_base.api) return;
+
+        const sub = api_base.api.onMessage().subscribe(({ data }: any) => {
+            if (data?.msg_type === 'proposal_open_contract' && data.proposal_open_contract?.contract_id === contractId) {
+                const contract = data.proposal_open_contract;
+
+                globalObserver.emit('bot.contract', {
+                    accountID: (api_base.account_info as any)?.loginid,
+                    ...contract,
+                });
+
+                // Contract finished (sold or expired) — stop listening, matching the
+                // same lifecycle the bot engine's own tracker uses.
+                if (contract.is_sold || contract.status !== 'open') {
+                    sub.unsubscribe();
+                }
+            }
+        });
+
+        api_base.pushSubscription?.(sub as any);
+
+        (api_base.api
+            .send({
+                proposal_open_contract: 1,
+                contract_id: contractId,
+                subscribe: 1,
+            }) as any as Promise<any>
+        ).catch((err: any) => {
+            console.error('[BulkTrader] Failed to subscribe to contract updates:', err);
+        });
+    }, []);
+
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode, 
         count: number, 
@@ -157,6 +197,9 @@ export const useBulkTrader = () => {
                     if (response?.error) {
                         onTradeResult?.({ index: i, success: false, error: response.error.message || 'Trade failed' });
                     } else {
+                        if (response?.buy?.contract_id) {
+                            trackContract(response.buy.contract_id);
+                        }
                         onTradeResult?.({ index: i, success: true });
                     }
                 } catch (err: any) {
@@ -165,7 +208,7 @@ export const useBulkTrader = () => {
                 }
             }, i * delay);
         }
-    }, []);
+    }, [trackContract]);
 
     return {
         isConnected,
