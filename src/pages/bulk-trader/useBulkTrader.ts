@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api_base } from '@/external/bot-skeleton/services/api/api-base';
+import { LogTypes } from '@/external/bot-skeleton';
 import { useStore } from '@/hooks/useStore';
 import { TickData, TradeExecutionMode } from './types';
 
@@ -10,7 +11,7 @@ export interface BulkTraderAccountInfo {
 }
 
 export const useBulkTrader = () => {
-    const { transactions } = useStore();
+    const { transactions, journal, summary_card } = useStore();
     const [isConnected, setIsConnected] = useState<boolean>(false);
     const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
     const [accountInfo, setAccountInfo] = useState<BulkTraderAccountInfo | null>(null);
@@ -114,32 +115,51 @@ export const useBulkTrader = () => {
 
     // After a successful buy, subscribe to proposal_open_contract for that
     // specific contract and push every update straight into the Transactions
-    // store — the same store.pushTransaction() logic the bot engine's own
-    // OpenContract tracker uses (see external/bot-skeleton/.../trade/OpenContract.js
-    // and stores/transactions-store.ts -> onBotContractEvent).
+    // and Summary stores, and log Sell/Profit/Loss entries into the Journal —
+    // the same store methods and LogTypes the bot engine's own OpenContract/
+    // Sell/Total trackers use (see external/bot-skeleton/.../trade/OpenContract.js,
+    // Sell.js, Total.js). Purchase.js's LogTypes.PURCHASE entry is logged separately
+    // right after the buy succeeds, in executeBulkTrades below.
     //
-    // IMPORTANT: we call the store method directly rather than going through the
-    // 'bot.contract' global observer event. That event is only wired up inside
-    // run_panel_store.onRunButtonClick() — i.e. only when a bot is started from
-    // the Bot Builder's own Run button — so nothing is ever listening for it when
-    // trades come from the Bulk Trader. Calling the store method directly sidesteps
-    // that registration lifecycle entirely and still reuses the exact same
-    // Transactions panel/store, so there's no duplicate history system.
+    // IMPORTANT: we call these store methods directly rather than going through the
+    // 'bot.contract' / 'ui.log.success' global observer events. Those are only wired
+    // up inside run_panel_store.onRunButtonClick() / onMount() in ways tied to the
+    // Bot Builder's own run lifecycle, so relying on them would be fragile for trades
+    // fired from the Bulk Trader. Calling the store methods directly sidesteps that
+    // registration lifecycle entirely and still reuses the exact same Transactions/
+    // Summary/Journal panels — no duplicate history system.
+    //
+    // Note on Summary specifically: it's designed to show one "currently live"
+    // contract at a time (mirroring a single bot run). With Bulk Trader firing many
+    // contracts in parallel, Summary will jump between whichever contract most
+    // recently updated rather than showing all of them — that's an inherent
+    // limitation of reusing a single-contract view for multi-contract trading, not a
+    // bug. Transactions (the full list) is where all the trades are visible.
     const trackContract = useCallback((contractId: number) => {
         if (!api_base.api) return;
 
         const sub = api_base.api.onMessage().subscribe(({ data }: any) => {
             if (data?.msg_type === 'proposal_open_contract' && data.proposal_open_contract?.contract_id === contractId) {
                 const contract = data.proposal_open_contract;
+                const accountID = (api_base.account_info as any)?.loginid;
 
-                transactions.onBotContractEvent({
-                    accountID: (api_base.account_info as any)?.loginid,
-                    ...contract,
-                });
+                transactions.onBotContractEvent({ accountID, ...contract });
+                summary_card.onBotContractEvent({ accountID, ...contract });
 
-                // Contract finished (sold or expired) — stop listening, matching the
-                // same lifecycle the bot engine's own tracker uses.
+                // Contract finished (sold or expired) — log the same Sell + Profit/Loss
+                // journal entries the bot engine logs on settlement, then stop listening.
                 if (contract.is_sold || contract.status !== 'open') {
+                    journal.onLogSuccess({
+                        log_type: LogTypes.SELL,
+                        extra: { sold_for: contract.sell_price } as any,
+                    });
+
+                    const profit = Number(contract.profit);
+                    journal.onLogSuccess({
+                        log_type: profit > 0 ? LogTypes.PROFIT : LogTypes.LOST,
+                        extra: { currency: contract.currency, profit },
+                    });
+
                     sub.unsubscribe();
                 }
             }
@@ -156,7 +176,7 @@ export const useBulkTrader = () => {
         ).catch((err: any) => {
             console.error('[BulkTrader] Failed to subscribe to contract updates:', err);
         });
-    }, [transactions]);
+    }, [transactions, summary_card, journal]);
 
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode, 
@@ -206,6 +226,10 @@ export const useBulkTrader = () => {
                         onTradeResult?.({ index: i, success: false, error: response.error.message || 'Trade failed' });
                     } else {
                         if (response?.buy?.contract_id) {
+                            journal.onLogSuccess({
+                                log_type: LogTypes.PURCHASE,
+                                extra: { transaction_id: response.buy.transaction_id } as any,
+                            });
                             trackContract(response.buy.contract_id);
                         }
                         onTradeResult?.({ index: i, success: true });
@@ -216,7 +240,7 @@ export const useBulkTrader = () => {
                 }
             }, i * delay);
         }
-    }, [trackContract]);
+    }, [trackContract, journal]);
 
     return {
         isConnected,
