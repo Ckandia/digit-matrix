@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api_base } from '@/external/bot-skeleton/services/api/api-base';
-import { observer as globalObserver } from '@/external/bot-skeleton/utils/observer';
+import { useStore } from '@/hooks/useStore';
 import { TickData, TradeExecutionMode } from './types';
 
 export interface BulkTraderAccountInfo {
@@ -10,6 +10,7 @@ export interface BulkTraderAccountInfo {
 }
 
 export const useBulkTrader = () => {
+    const { transactions } = useStore();
     const [isConnected, setIsConnected] = useState<boolean>(false);
     const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
     const [accountInfo, setAccountInfo] = useState<BulkTraderAccountInfo | null>(null);
@@ -112,11 +113,18 @@ export const useBulkTrader = () => {
     }, []);
 
     // After a successful buy, subscribe to proposal_open_contract for that
-    // specific contract and re-broadcast every update as 'bot.contract' — the
-    // exact same event the bot engine's own OpenContract tracker emits
-    // (see external/bot-skeleton/.../trade/OpenContract.js). The Transactions,
-    // Summary, and Journal panels already listen for this event, so trades fired
-    // from the Bulk Trader show up there automatically with zero duplicate UI/state.
+    // specific contract and push every update straight into the Transactions
+    // store — the same store.pushTransaction() logic the bot engine's own
+    // OpenContract tracker uses (see external/bot-skeleton/.../trade/OpenContract.js
+    // and stores/transactions-store.ts -> onBotContractEvent).
+    //
+    // IMPORTANT: we call the store method directly rather than going through the
+    // 'bot.contract' global observer event. That event is only wired up inside
+    // run_panel_store.onRunButtonClick() — i.e. only when a bot is started from
+    // the Bot Builder's own Run button — so nothing is ever listening for it when
+    // trades come from the Bulk Trader. Calling the store method directly sidesteps
+    // that registration lifecycle entirely and still reuses the exact same
+    // Transactions panel/store, so there's no duplicate history system.
     const trackContract = useCallback((contractId: number) => {
         if (!api_base.api) return;
 
@@ -124,7 +132,7 @@ export const useBulkTrader = () => {
             if (data?.msg_type === 'proposal_open_contract' && data.proposal_open_contract?.contract_id === contractId) {
                 const contract = data.proposal_open_contract;
 
-                globalObserver.emit('bot.contract', {
+                transactions.onBotContractEvent({
                     accountID: (api_base.account_info as any)?.loginid,
                     ...contract,
                 });
@@ -148,7 +156,7 @@ export const useBulkTrader = () => {
         ).catch((err: any) => {
             console.error('[BulkTrader] Failed to subscribe to contract updates:', err);
         });
-    }, []);
+    }, [transactions]);
 
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode, 
