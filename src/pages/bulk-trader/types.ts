@@ -36,6 +36,36 @@ export const STRATEGY_MAPPING: Record<string, string> = {
     'Fall Equals': 'PUTE',
 };
 
+export interface StrategySide {
+    label: string;
+    contract_type: string;
+}
+
+export interface StrategyPair {
+    left: StrategySide;
+    right: StrategySide;
+}
+
+// Groups each dropdown strategy into its opposite-direction pair, so the two main
+// action buttons can relabel themselves (and fire the correct contract type) based
+// on whatever the user has selected — e.g. selecting "Over" shows "Bulk Over" /
+// "Bulk Under" instead of always showing "Bulk Even" / "Bulk Odd" regardless of
+// the dropdown. Also used by Auto Flip to know what the "opposite side" is.
+export const STRATEGY_PAIR_MAPPING: Record<string, StrategyPair> = {
+    'Even': { left: { label: 'Even', contract_type: 'DIGITEVEN' }, right: { label: 'Odd', contract_type: 'DIGITODD' } },
+    'Odd': { left: { label: 'Even', contract_type: 'DIGITEVEN' }, right: { label: 'Odd', contract_type: 'DIGITODD' } },
+    'Matches': { left: { label: 'Match', contract_type: 'DIGITMATCH' }, right: { label: 'Differ', contract_type: 'DIGITDIFF' } },
+    'Differs': { left: { label: 'Match', contract_type: 'DIGITMATCH' }, right: { label: 'Differ', contract_type: 'DIGITDIFF' } },
+    'Over': { left: { label: 'Over', contract_type: 'DIGITOVER' }, right: { label: 'Under', contract_type: 'DIGITUNDER' } },
+    'Under': { left: { label: 'Over', contract_type: 'DIGITOVER' }, right: { label: 'Under', contract_type: 'DIGITUNDER' } },
+    'Rise': { left: { label: 'Rise', contract_type: 'CALL' }, right: { label: 'Fall', contract_type: 'PUT' } },
+    'Fall': { left: { label: 'Rise', contract_type: 'CALL' }, right: { label: 'Fall', contract_type: 'PUT' } },
+    'Only Ups': { left: { label: 'Only Ups', contract_type: 'CALL' }, right: { label: 'Only Downs', contract_type: 'PUT' } },
+    'Only Downs': { left: { label: 'Only Ups', contract_type: 'CALL' }, right: { label: 'Only Downs', contract_type: 'PUT' } },
+    'Rise Equals': { left: { label: 'Rise Equals', contract_type: 'CALLE' }, right: { label: 'Fall Equals', contract_type: 'PUTE' } },
+    'Fall Equals': { left: { label: 'Rise Equals', contract_type: 'CALLE' }, right: { label: 'Fall Equals', contract_type: 'PUTE' } },
+};
+
 export interface TickData {
     epoch: number;
     quote: number;
