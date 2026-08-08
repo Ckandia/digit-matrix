@@ -135,7 +135,11 @@ export const useBulkTrader = () => {
     // recently updated rather than showing all of them — that's an inherent
     // limitation of reusing a single-contract view for multi-contract trading, not a
     // bug. Transactions (the full list) is where all the trades are visible.
-    const trackContract = useCallback((contractId: number) => {
+    const trackContract = useCallback((
+        contractId: number,
+        contractType: string,
+        onSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
+    ) => {
         if (!api_base.api) return;
 
         const sub = api_base.api.onMessage().subscribe(({ data }: any) => {
@@ -160,6 +164,8 @@ export const useBulkTrader = () => {
                         extra: { currency: contract.currency, profit },
                     });
 
+                    onSettled?.({ contract_type: contractType, profit, won: profit > 0 });
+
                     sub.unsubscribe();
                 }
             }
@@ -182,7 +188,8 @@ export const useBulkTrader = () => {
         mode: TradeExecutionMode, 
         count: number, 
         tradeParams: any,
-        onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void
+        onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void,
+        onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
     ) => {
         if (!api_base.api || !api_base.is_authorized) {
             console.error('[BulkTrader] Cannot trade — not connected/authorized to a Deriv account.');
@@ -230,7 +237,7 @@ export const useBulkTrader = () => {
                                 log_type: LogTypes.PURCHASE,
                                 extra: { transaction_id: response.buy.transaction_id } as any,
                             });
-                            trackContract(response.buy.contract_id);
+                            trackContract(response.buy.contract_id, tradeParams.contract_type, onContractSettled);
                         }
                         onTradeResult?.({ index: i, success: true });
                     }
