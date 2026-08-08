@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
-import { MARKET_MAPPING, STRATEGY_MAPPING, TradeExecutionMode } from './types';
+import { MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TradeExecutionMode } from './types';
 import './bulk-trader.scss';
 
-type ActionButton = 'Even' | 'AI' | 'Odd';
+type ActionButton = 'Left' | 'AI' | 'Right';
 
 const BulkTrader = () => {
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
@@ -19,10 +19,17 @@ const BulkTrader = () => {
     const [runningButton, setRunningButton] = useState<ActionButton | null>(null);
     const [lastError, setLastError] = useState<string | null>(null);
     const [tradesFired, setTradesFired] = useState<number>(0);
+    const [autoFlipEnabled, setAutoFlipEnabled] = useState<boolean>(false);
+    const [stopWinEnabled, setStopWinEnabled] = useState<boolean>(false);
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
     const loopIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    // Which contract_type the running loop is currently firing. Starts at whichever
+    // side/strategy was chosen; Auto Flip switches it to the opposite side after a loss.
+    const directionRef = useRef<string>('');
+    // Running total profit for the current session — checked by Stop Win.
+    const cumulativeProfitRef = useRef<number>(0);
 
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
@@ -38,21 +45,37 @@ const BulkTrader = () => {
     // heatmap above it already breaks things down per-digit.
     const digitDisplayMode: 'even_odd' | 'digit' = ['Even', 'Odd'].includes(strategy) ? 'even_odd' : 'digit';
 
+    // The two main action buttons take their label + contract_type from whichever
+    // strategy is selected in the dropdown — e.g. "Over" shows "Bulk Over" / "Bulk
+    // Under" instead of always showing "Bulk Even" / "Bulk Odd". Also gives Auto
+    // Flip the "opposite side" to switch to after a loss.
+    const pair = useMemo(
+        () => STRATEGY_PAIR_MAPPING[strategy] ?? {
+            left: { label: strategy, contract_type: STRATEGY_MAPPING[strategy] },
+            right: { label: strategy, contract_type: STRATEGY_MAPPING[strategy] },
+        },
+        [strategy]
+    );
+
     // Trading is only enabled once the shared Deriv connection is both open AND
     // authorized against the logged-in account (not just socket-open).
     const canTrade = isConnected && isAuthorized;
 
-    const triggerBatch = useCallback((typeOverride?: 'Even' | 'Odd') => {
-        let selectedContract = STRATEGY_MAPPING[strategy];
-        if (typeOverride === 'Even') selectedContract = 'DIGITEVEN';
-        if (typeOverride === 'Odd') selectedContract = 'DIGITODD';
+    const stopLoop = useCallback(() => {
+        if (loopIntervalRef.current) {
+            clearInterval(loopIntervalRef.current);
+            loopIntervalRef.current = null;
+        }
+        setRunningButton(null);
+    }, []);
 
+    const triggerBatch = useCallback((contractType: string) => {
         executeBulkTrades(
             executionMode,
             bulkCount,
             {
                 symbol: MARKET_MAPPING[market],
-                contract_type: selectedContract,
+                contract_type: contractType,
                 amount: stake,
                 duration,
                 prediction: requiresPrediction ? prediction : undefined,
@@ -63,17 +86,32 @@ const BulkTrader = () => {
                 } else if (result.error) {
                     setLastError(result.error);
                 }
+            },
+            (settled) => {
+                // Stop Win: accumulate profit across the whole run; the moment we're
+                // net positive, stop immediately — matches "close all trades when in
+                // profit" rather than waiting for a fixed target.
+                if (stopWinEnabled) {
+                    cumulativeProfitRef.current += settled.profit;
+                    if (cumulativeProfitRef.current > 0) {
+                        stopLoop();
+                        return;
+                    }
+                }
+
+                // Auto Flip: switch to the opposite side of the current strategy pair
+                // after any loss (Even -> Odd, Over -> Under, Match -> Differ, etc).
+                // Reads/writes directionRef so the next scheduled batch picks it up —
+                // in-flight trades from the batch already fired are unaffected.
+                if (autoFlipEnabled && !settled.won) {
+                    directionRef.current =
+                        directionRef.current === pair.left.contract_type
+                            ? pair.right.contract_type
+                            : pair.left.contract_type;
+                }
             }
         );
-    }, [strategy, executionMode, bulkCount, market, stake, duration, requiresPrediction, prediction, executeBulkTrades]);
-
-    const stopLoop = useCallback(() => {
-        if (loopIntervalRef.current) {
-            clearInterval(loopIntervalRef.current);
-            loopIntervalRef.current = null;
-        }
-        setRunningButton(null);
-    }, []);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, prediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, pair, stopLoop]);
 
     const startLoop = useCallback((button: ActionButton) => {
         // Only one button can be actively firing trades at a time — starting a
@@ -83,20 +121,26 @@ const BulkTrader = () => {
             loopIntervalRef.current = null;
         }
 
-        const typeOverride = button === 'Even' ? 'Even' : button === 'Odd' ? 'Odd' : undefined;
+        const initialType =
+            button === 'Left' ? pair.left.contract_type :
+            button === 'Right' ? pair.right.contract_type :
+            STRATEGY_MAPPING[strategy];
+
+        directionRef.current = initialType;
+        cumulativeProfitRef.current = 0;
         setLastError(null);
         setTradesFired(0);
-        triggerBatch(typeOverride);
+
+        const fire = () => triggerBatch(directionRef.current);
+        fire();
 
         const delayPerTrade = executionMode === 'FAST' ? 50 : 300;
         const cycleMs = bulkCount * delayPerTrade + 750; // let the current batch fully finish before repeating
 
-        loopIntervalRef.current = setInterval(() => {
-            triggerBatch(typeOverride);
-        }, cycleMs);
+        loopIntervalRef.current = setInterval(fire, cycleMs);
 
         setRunningButton(button);
-    }, [triggerBatch, executionMode, bulkCount]);
+    }, [triggerBatch, executionMode, bulkCount, pair, strategy]);
 
     // Press once to start, press the same button again to stop.
     const handleToggle = (button: ActionButton) => {
@@ -217,6 +261,33 @@ const BulkTrader = () => {
                             />
                         </div>
                     </div>
+
+                    <div className="form-row checkbox-row">
+                        <label className="checkbox-field">
+                            <input
+                                type="checkbox"
+                                checked={autoFlipEnabled}
+                                disabled={formDisabled}
+                                onChange={(e) => setAutoFlipEnabled(e.target.checked)}
+                            />
+                            <span>
+                                Auto Flip
+                                <small>Switch between {pair.left.label} and {pair.right.label} after a loss</small>
+                            </span>
+                        </label>
+                        <label className="checkbox-field">
+                            <input
+                                type="checkbox"
+                                checked={stopWinEnabled}
+                                disabled={formDisabled}
+                                onChange={(e) => setStopWinEnabled(e.target.checked)}
+                            />
+                            <span>
+                                Stop Win
+                                <small>Auto-stop once the session is in profit</small>
+                            </span>
+                        </label>
+                    </div>
                 </div>
 
                 {/* Digit Visualizer Display */}
@@ -228,27 +299,27 @@ const BulkTrader = () => {
             {/* Bulk Action Controls — press once to start, press again to stop */}
             <div className="action-pad-card">
                 <button 
-                    className={`btn-action-even ${runningButton === 'Even' ? 'running' : ''}`}
-                    onClick={() => handleToggle('Even')}
-                    disabled={!canTrade || (formDisabled && runningButton !== 'Even')}
+                    className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''}`}
+                    onClick={() => handleToggle('Left')}
+                    disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
                 >
-                    <span className="icon">{runningButton === 'Even' ? '■' : '⧈'}</span>
-                    {runningButton === 'Even' ? 'Stop' : 'Bulk Even'}
+                    <span className="icon">{runningButton === 'Left' ? '■' : '⧈'}</span>
+                    {runningButton === 'Left' ? 'Stop' : `Bulk ${pair.left.label}`}
                 </button>
                 <button 
                     className={`btn-action-ai ${runningButton === 'AI' ? 'running' : ''}`}
                     onClick={() => handleToggle('AI')}
                     disabled={!canTrade || (formDisabled && runningButton !== 'AI')}
                 >
-                    {runningButton === 'AI' ? 'Stop' : 'Bulk AI Entry'}
+                    {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
                 </button>
                 <button 
-                    className={`btn-action-odd ${runningButton === 'Odd' ? 'running' : ''}`}
-                    onClick={() => handleToggle('Odd')}
-                    disabled={!canTrade || (formDisabled && runningButton !== 'Odd')}
+                    className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''}`}
+                    onClick={() => handleToggle('Right')}
+                    disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
                 >
-                    <span className="icon">{runningButton === 'Odd' ? '■' : '▲'}</span>
-                    {runningButton === 'Odd' ? 'Stop' : 'Bulk Odd'}
+                    <span className="icon">{runningButton === 'Right' ? '■' : '▲'}</span>
+                    {runningButton === 'Right' ? 'Stop' : `Bulk ${pair.right.label}`}
                 </button>
             </div>
 
@@ -256,7 +327,11 @@ const BulkTrader = () => {
             <div className="footer-control-bar">
                 <div className="status-pill">
                     {runningButton ? (
-                        <span>Running <strong>{runningButton}</strong> · {tradesFired} trade{tradesFired === 1 ? '' : 's'} fired</span>
+                        <span>
+                            Running <strong>
+                                {runningButton === 'Left' ? pair.left.label : runningButton === 'Right' ? pair.right.label : `AI (${strategy})`}
+                            </strong> · {tradesFired} trade{tradesFired === 1 ? '' : 's'} fired
+                        </span>
                     ) : (
                         <span>Idle</span>
                     )}
