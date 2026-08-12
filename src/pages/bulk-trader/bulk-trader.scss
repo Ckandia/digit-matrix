@@ -37,6 +37,79 @@
     }
   }
 
+  /* Signal Indicator */
+  .signal-card {
+    background: linear-gradient(135deg, #161623, #1c1c2e);
+    border: 1px solid #3b82f6;
+    border-radius: 16px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+
+    &.enter-now {
+      border-color: #22c55e;
+      box-shadow: 0 0 20px rgba(34, 197, 94, 0.4);
+      animation: signal-pulse 0.8s ease-in-out infinite;
+    }
+
+    .signal-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .signal-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: #94a3b8;
+    }
+
+    .signal-value {
+      font-size: 20px;
+      font-weight: 800;
+      color: #3b82f6;
+    }
+
+    .signal-countdown {
+      font-size: 13px;
+      font-weight: 700;
+      color: #94a3b8;
+      min-width: 140px;
+      text-align: center;
+    }
+
+    .enter-now-text {
+      color: #22c55e;
+      font-size: 16px;
+      letter-spacing: 1px;
+    }
+
+    .signal-apply-btn {
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 1px solid #3b82f6;
+      background: transparent;
+      color: #3b82f6;
+      font-weight: 700;
+      font-size: 12px;
+      cursor: pointer;
+
+      &:hover { background: rgba(59, 130, 246, 0.1); }
+      &:disabled { opacity: 0.4; cursor: not-allowed; }
+    }
+  }
+
+  @keyframes signal-pulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(34, 197, 94, 0.4); }
+    50% { box-shadow: 0 0 32px rgba(34, 197, 94, 0.7); }
+  }
+
   .top-grid {
     display: grid;
     grid-template-columns: 340px 1fr;
@@ -306,6 +379,7 @@
       &.running { background: #ef4444; }
       &.running:hover { background: #dc2626; }
       &:disabled { opacity: 0.4; cursor: not-allowed; }
+      &.signal-match { box-shadow: 0 0 0 3px #facc15, 0 0 16px rgba(250, 204, 21, 0.6); }
     }
 
     .btn-action-ai {
@@ -356,6 +430,7 @@
       &.running { background: #ef4444; }
       &.running:hover { background: #dc2626; }
       &:disabled { opacity: 0.4; cursor: not-allowed; }
+      &.signal-match { box-shadow: 0 0 0 3px #facc15, 0 0 16px rgba(250, 204, 21, 0.6); }
     }
   }
 
