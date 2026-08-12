@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
-import { MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TradeExecutionMode } from './types';
+import { MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
+import { computeSignal, TradeSignal } from './signal';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right';
+const SIGNAL_CYCLE_SECONDS = 20;
+const ENTER_NOW_DISPLAY_MS = 3000;
 
 const BulkTrader = () => {
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
@@ -31,11 +34,49 @@ const BulkTrader = () => {
     // Running total profit for the current session — checked by Stop Win.
     const cumulativeProfitRef = useRef<number>(0);
 
+    // Signal indicator: recommends a side (or digit) and cycles on a countdown so
+    // the user has a consistent, structured moment to act rather than reacting to
+    // every tick. tickSequenceRef lets the interval read the latest ticks without
+    // needing to restart every time a new tick arrives.
+    const [signal, setSignal] = useState<TradeSignal | null>(null);
+    const [signalCountdown, setSignalCountdown] = useState<number>(SIGNAL_CYCLE_SECONDS);
+    const [isEnterNow, setIsEnterNow] = useState<boolean>(false);
+    const tickSequenceRef = useRef<TickData[]>([]);
+
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
+
+    useEffect(() => {
+        tickSequenceRef.current = tickSequence;
+    }, [tickSequence]);
+
+    // Signal cycle: lock in a signal, count down, flash "ENTER NOW" at zero, then
+    // compute a fresh signal for the next cycle. Restarts whenever the strategy,
+    // market, or prediction (used as the Over/Under threshold) changes.
+    useEffect(() => {
+        setSignal(computeSignal(strategy, tickSequenceRef.current, prediction));
+        setSignalCountdown(SIGNAL_CYCLE_SECONDS);
+        setIsEnterNow(false);
+
+        const interval = setInterval(() => {
+            setSignalCountdown((prev) => {
+                if (prev <= 1) {
+                    setIsEnterNow(true);
+                    setTimeout(() => {
+                        setSignal(computeSignal(strategy, tickSequenceRef.current, prediction));
+                        setIsEnterNow(false);
+                    }, ENTER_NOW_DISPLAY_MS);
+                    return SIGNAL_CYCLE_SECONDS;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [strategy, market, prediction]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
 
@@ -188,6 +229,35 @@ const BulkTrader = () => {
                 )}
             </div>
 
+            {/* Signal Indicator — recommends a side/digit and cycles on a countdown */}
+            {signal && (
+                <div className={`signal-card ${isEnterNow ? 'enter-now' : ''}`}>
+                    <div className="signal-info">
+                        <span className="signal-label">SIGNAL</span>
+                        <span className="signal-value">
+                            {signal.digit !== undefined ? `${signal.label} · Digit ${signal.digit}` : signal.label}
+                        </span>
+                    </div>
+                    <div className="signal-countdown">
+                        {isEnterNow ? (
+                            <span className="enter-now-text">ENTER NOW</span>
+                        ) : (
+                            <span>Next signal in {signalCountdown}s</span>
+                        )}
+                    </div>
+                    {signal.digit !== undefined && (
+                        <button
+                            type="button"
+                            className="signal-apply-btn"
+                            disabled={formDisabled}
+                            onClick={() => setPrediction(signal.digit as number)}
+                        >
+                            Use Digit {signal.digit}
+                        </button>
+                    )}
+                </div>
+            )}
+
             <div className="top-grid">
                 {/* Controls Card */}
                 <div className="control-card">
@@ -299,7 +369,7 @@ const BulkTrader = () => {
             {/* Bulk Action Controls — press once to start, press again to stop */}
             <div className="action-pad-card">
                 <button 
-                    className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''}`}
+                    className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' ? 'signal-match' : ''}`}
                     onClick={() => handleToggle('Left')}
                     disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
                 >
@@ -314,7 +384,7 @@ const BulkTrader = () => {
                     {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
                 </button>
                 <button 
-                    className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''}`}
+                    className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' ? 'signal-match' : ''}`}
                     onClick={() => handleToggle('Right')}
                     disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
                 >
