@@ -8,6 +8,9 @@ import './bulk-trader.scss';
 type ActionButton = 'Left' | 'AI' | 'Right';
 const SIGNAL_CYCLE_SECONDS = 20;
 const ENTER_NOW_DISPLAY_MS = 3000;
+// Wait for at least this many ticks before showing a first signal, so the very
+// first reading isn't based on just 1-2 ticks of noise.
+const MIN_TICKS_FOR_SIGNAL = 20;
 
 const BulkTrader = () => {
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
@@ -24,15 +27,37 @@ const BulkTrader = () => {
     const [tradesFired, setTradesFired] = useState<number>(0);
     const [autoFlipEnabled, setAutoFlipEnabled] = useState<boolean>(false);
     const [stopWinEnabled, setStopWinEnabled] = useState<boolean>(false);
+    // Digit actually locked in for the currently-running batch — shown in the status
+    // pill so it can't drift out of sync with the live Prediction field in the
+    // background (see runPredictionRef).
+    const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
-    const loopIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    // Which contract_type the running loop is currently firing. Starts at whichever
-    // side/strategy was chosen; Auto Flip switches it to the opposite side after a loss.
+    // Which contract_type the running batch is currently firing. Starts at whichever
+    // side/strategy was chosen; Auto Flip switches it to the opposite side after a
+    // loss. Read fresh before each individual trade (see useBulkTrader), so a flip
+    // takes effect on the very next trade, not just on the next separate run.
     const directionRef = useRef<string>('');
     // Running total profit for the current session — checked by Stop Win.
     const cumulativeProfitRef = useRef<number>(0);
+    // Cancels any not-yet-fired trades in the current batch — used by manual Stop
+    // and by Stop Win (which needs to halt remaining trades immediately).
+    const cancelRunRef = useRef<() => void>(() => {});
+    // Auto-clears the "running" UI state once the fixed-size batch has finished
+    // firing all its trades (bulkCount total, not repeating forever).
+    const completionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Lets the signal cycle read the current Prediction value fresh without
+    // restarting on every change (see the signal effect below).
+    const predictionRef = useRef<number>(prediction);
+    // Snapshot of the digit for the CURRENT run only — captured once when a button
+    // is pressed and held fixed for every trade in that batch. This is deliberately
+    // separate from predictionRef/the live signal: all bulkCount trades in one run
+    // should target the same digit (e.g. "10 trades at digit 8" means all 10 use
+    // barrier 8), even if the signal ticks over to a different digit mid-run. Only
+    // the side (Match/Differ, Over/Under, etc.) is allowed to change mid-run, via
+    // Auto Flip — the digit itself never should.
+    const runPredictionRef = useRef<number>(prediction);
 
     // Signal indicator: recommends a side (or digit) and cycles on a countdown so
     // the user has a consistent, structured moment to act rather than reacting to
@@ -53,20 +78,50 @@ const BulkTrader = () => {
         tickSequenceRef.current = tickSequence;
     }, [tickSequence]);
 
-    // Signal cycle: lock in a signal, count down, flash "ENTER NOW" at zero, then
-    // compute a fresh signal for the next cycle. Restarts whenever the strategy,
-    // market, or prediction (used as the Over/Under threshold) changes.
     useEffect(() => {
-        setSignal(computeSignal(strategy, tickSequenceRef.current, prediction));
+        predictionRef.current = prediction;
+    }, [prediction]);
+
+    // Applies a new signal and, for digit-based strategies, auto-fills Prediction
+    // with the recommended digit — digit markets move fast enough that requiring a
+    // manual "apply" click risked missing the entry window.
+    const applySignal = useCallback((newSignal: TradeSignal | null) => {
+        setSignal(newSignal);
+        if (newSignal?.digit !== undefined) {
+            setPrediction(newSignal.digit);
+        }
+    }, []);
+
+    // Signal cycle: wait for enough tick data, lock in a signal, count down, flash
+    // "ENTER NOW" at zero, then compute a fresh signal for the next cycle. Restarts
+    // when strategy or market changes. Deliberately does NOT depend on `prediction`
+    // (reads it via predictionRef instead) — since applySignal can itself update
+    // prediction, depending on it here would restart this effect every cycle.
+    useEffect(() => {
+        setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
         setIsEnterNow(false);
 
+        let hasSignal = false;
+        const tryComputeInitial = () => {
+            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current));
+                return true;
+            }
+            return false;
+        };
+        hasSignal = tryComputeInitial();
+
         const interval = setInterval(() => {
+            if (!hasSignal) {
+                hasSignal = tryComputeInitial();
+                return; // still gathering data — don't start counting down yet
+            }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
                     setIsEnterNow(true);
                     setTimeout(() => {
-                        setSignal(computeSignal(strategy, tickSequenceRef.current, prediction));
+                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current));
                         setIsEnterNow(false);
                     }, ENTER_NOW_DISPLAY_MS);
                     return SIGNAL_CYCLE_SECONDS;
@@ -76,7 +131,7 @@ const BulkTrader = () => {
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [strategy, market, prediction]);
+    }, [strategy, market, applySignal]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
 
@@ -102,25 +157,59 @@ const BulkTrader = () => {
     // authorized against the logged-in account (not just socket-open).
     const canTrade = isConnected && isAuthorized;
 
+    // Stops the current run: cancels any not-yet-fired trades in the batch, clears
+    // the auto-completion timer, and resets the UI to idle. Used for manual Stop,
+    // Stop Win, and cleanup on unmount/disconnect.
     const stopLoop = useCallback(() => {
-        if (loopIntervalRef.current) {
-            clearInterval(loopIntervalRef.current);
-            loopIntervalRef.current = null;
+        cancelRunRef.current();
+        cancelRunRef.current = () => {};
+        if (completionTimeoutRef.current) {
+            clearTimeout(completionTimeoutRef.current);
+            completionTimeoutRef.current = null;
         }
         setRunningButton(null);
+        setLockedPrediction(null);
     }, []);
 
-    const triggerBatch = useCallback((contractType: string) => {
-        executeBulkTrades(
+    const startLoop = useCallback((button: ActionButton) => {
+        // Only one button can be actively firing trades at a time — starting a
+        // new one cancels whichever was previously running.
+        cancelRunRef.current();
+        if (completionTimeoutRef.current) {
+            clearTimeout(completionTimeoutRef.current);
+            completionTimeoutRef.current = null;
+        }
+
+        const initialType =
+            button === 'Left' ? pair.left.contract_type :
+            button === 'Right' ? pair.right.contract_type :
+            STRATEGY_MAPPING[strategy];
+
+        directionRef.current = initialType;
+        runPredictionRef.current = predictionRef.current; // lock the digit for this whole run
+        setLockedPrediction(requiresPrediction ? predictionRef.current : null);
+        cumulativeProfitRef.current = 0;
+        setLastError(null);
+        setTradesFired(0);
+
+        // getDynamicParams is called fresh by useBulkTrader immediately before each
+        // individual trade fires. contract_type reads directionRef (which Auto Flip
+        // can change trade-to-trade), but prediction reads the fixed run-start
+        // snapshot — the digit stays the same for every trade in this batch.
+        const getDynamicParams = () => ({
+            contract_type: directionRef.current,
+            prediction: requiresPrediction ? runPredictionRef.current : undefined,
+        });
+
+        const cancel = executeBulkTrades(
             executionMode,
-            bulkCount,
+            bulkCount, // TOTAL trades for this run — fires exactly this many, then stops.
             {
                 symbol: MARKET_MAPPING[market],
-                contract_type: contractType,
                 amount: stake,
                 duration,
-                prediction: requiresPrediction ? prediction : undefined,
             },
+            getDynamicParams,
             (result) => {
                 if (result.success) {
                     setTradesFired((prev) => prev + 1);
@@ -129,9 +218,10 @@ const BulkTrader = () => {
                 }
             },
             (settled) => {
-                // Stop Win: accumulate profit across the whole run; the moment we're
-                // net positive, stop immediately — matches "close all trades when in
-                // profit" rather than waiting for a fixed target.
+                // Stop Win: accumulate profit across the run; the moment we're net
+                // positive, cancel any remaining not-yet-fired trades immediately —
+                // matches "no more trades once the session is in profit" rather than
+                // letting the rest of the batch fire first.
                 if (stopWinEnabled) {
                     cumulativeProfitRef.current += settled.profit;
                     if (cumulativeProfitRef.current > 0) {
@@ -142,8 +232,8 @@ const BulkTrader = () => {
 
                 // Auto Flip: switch to the opposite side of the current strategy pair
                 // after any loss (Even -> Odd, Over -> Under, Match -> Differ, etc).
-                // Reads/writes directionRef so the next scheduled batch picks it up —
-                // in-flight trades from the batch already fired are unaffected.
+                // Writes directionRef, which getDynamicParams reads fresh on the very
+                // next trade in this same batch.
                 if (autoFlipEnabled && !settled.won) {
                     directionRef.current =
                         directionRef.current === pair.left.contract_type
@@ -152,38 +242,24 @@ const BulkTrader = () => {
                 }
             }
         );
-    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, prediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, pair, stopLoop]);
 
-    const startLoop = useCallback((button: ActionButton) => {
-        // Only one button can be actively firing trades at a time — starting a
-        // new one stops whichever was previously running.
-        if (loopIntervalRef.current) {
-            clearInterval(loopIntervalRef.current);
-            loopIntervalRef.current = null;
-        }
+        cancelRunRef.current = cancel;
 
-        const initialType =
-            button === 'Left' ? pair.left.contract_type :
-            button === 'Right' ? pair.right.contract_type :
-            STRATEGY_MAPPING[strategy];
-
-        directionRef.current = initialType;
-        cumulativeProfitRef.current = 0;
-        setLastError(null);
-        setTradesFired(0);
-
-        const fire = () => triggerBatch(directionRef.current);
-        fire();
-
+        // Auto-return to idle once all bulkCount trades have been fired (not
+        // necessarily settled yet — settlement continues updating Transactions/
+        // Summary/Journal in the background regardless of this UI state).
         const delayPerTrade = executionMode === 'FAST' ? 50 : 300;
-        const cycleMs = bulkCount * delayPerTrade + 750; // let the current batch fully finish before repeating
-
-        loopIntervalRef.current = setInterval(fire, cycleMs);
+        const totalFireDurationMs = bulkCount * delayPerTrade + 500;
+        completionTimeoutRef.current = setTimeout(() => {
+            setRunningButton(null);
+            setLockedPrediction(null);
+            completionTimeoutRef.current = null;
+        }, totalFireDurationMs);
 
         setRunningButton(button);
-    }, [triggerBatch, executionMode, bulkCount, pair, strategy]);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, pair, strategy, stopLoop]);
 
-    // Press once to start, press the same button again to stop.
+    // Press once to start, press the same button again to stop early.
     const handleToggle = (button: ActionButton) => {
         if (!canTrade) return;
         if (runningButton === button) {
@@ -193,11 +269,12 @@ const BulkTrader = () => {
         }
     };
 
-    // Clean up the running loop on unmount so it doesn't keep firing trades
+    // Clean up the running batch on unmount so it doesn't keep firing trades
     // after the user navigates away from the tab.
     useEffect(() => {
         return () => {
-            if (loopIntervalRef.current) clearInterval(loopIntervalRef.current);
+            cancelRunRef.current();
+            if (completionTimeoutRef.current) clearTimeout(completionTimeoutRef.current);
         };
     }, []);
 
@@ -230,7 +307,7 @@ const BulkTrader = () => {
             </div>
 
             {/* Signal Indicator — recommends a side/digit and cycles on a countdown */}
-            {signal && (
+            {signal ? (
                 <div className={`signal-card ${isEnterNow ? 'enter-now' : ''}`}>
                     <div className="signal-info">
                         <span className="signal-label">SIGNAL</span>
@@ -246,15 +323,18 @@ const BulkTrader = () => {
                         )}
                     </div>
                     {signal.digit !== undefined && (
-                        <button
-                            type="button"
-                            className="signal-apply-btn"
-                            disabled={formDisabled}
-                            onClick={() => setPrediction(signal.digit as number)}
-                        >
-                            Use Digit {signal.digit}
-                        </button>
+                        <span className="signal-auto-applied">Prediction auto-set to {signal.digit}</span>
                     )}
+                </div>
+            ) : (
+                <div className="signal-card analyzing">
+                    <div className="signal-info">
+                        <span className="signal-label">SIGNAL</span>
+                        <span className="signal-value">Analyzing market…</span>
+                    </div>
+                    <div className="signal-countdown">
+                        <span>Gathering {MIN_TICKS_FOR_SIGNAL} ticks before first signal</span>
+                    </div>
                 </div>
             )}
 
@@ -400,7 +480,8 @@ const BulkTrader = () => {
                         <span>
                             Running <strong>
                                 {runningButton === 'Left' ? pair.left.label : runningButton === 'Right' ? pair.right.label : `AI (${strategy})`}
-                            </strong> · {tradesFired} trade{tradesFired === 1 ? '' : 's'} fired
+                                {lockedPrediction !== null ? ` · Digit ${lockedPrediction}` : ''}
+                            </strong> · {tradesFired}/{bulkCount} trade{bulkCount === 1 ? '' : 's'} fired
                         </span>
                     ) : (
                         <span>Idle</span>
