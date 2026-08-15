@@ -35,8 +35,19 @@ export const useBulkTrader = () => {
 
         checkStatus();
         const interval = setInterval(checkStatus, 500);
+        return () => clearInterval(interval);
+    }, []);
 
-        // Listen for incoming ticks
+    // IMPORTANT (multi-account safety): switching Deriv accounts (or a network
+    // drop/reconnect) tears down and replaces api_base.api with a brand-new
+    // WebSocket instance. A tick subscription set up once on mount would keep
+    // listening to the OLD, now-dead socket forever — ticks would silently stop
+    // updating after any account switch, with no error shown. Re-running this
+    // effect whenever isConnected changes re-binds the listener to whichever
+    // socket is actually live right now.
+    useEffect(() => {
+        if (!isConnected) return;
+
         const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
             if (data?.msg_type === 'tick' && data.tick) {
                 if (data.tick.symbol === activeSymbolRef.current) {
@@ -83,10 +94,9 @@ export const useBulkTrader = () => {
         });
 
         return () => {
-            clearInterval(interval);
             subscription?.unsubscribe();
         };
-    }, []);
+    }, [isConnected]);
 
     const subscribeTicks = useCallback(async (symbol: string) => {
         if (!symbol || !api_base.api) return;
@@ -187,13 +197,14 @@ export const useBulkTrader = () => {
     // NOTE ON EXECUTION MODEL: bulkCount is the TOTAL number of trades for this run,
     // not a per-cycle amount that repeats forever. getDynamicParams() is called fresh
     // immediately before each individual trade fires (not once for the whole batch) —
-    // this is what lets Auto Flip and an updated Prediction digit take effect
-    // trade-by-trade within a single run, not just between separate runs.
+    // this is what lets Auto Flip, an updated Prediction digit, and a stake-recovery
+    // increase all take effect trade-by-trade within a single run, not just between
+    // separate runs.
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode,
         count: number,
-        staticParams: { symbol: string; amount: number; duration: number },
-        getDynamicParams: () => { contract_type: string; prediction?: number },
+        staticParams: { symbol: string; duration: number },
+        getDynamicParams: () => { contract_type: string; prediction?: number; amount: number },
         onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void,
         onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
     ): (() => void) => {
@@ -203,6 +214,13 @@ export const useBulkTrader = () => {
             return () => {};
         }
 
+        // Multi-account safety net: remember which account this run started on. If
+        // the user switches accounts mid-run (index.tsx also stops the run on switch,
+        // but there's an unavoidable small race for a trade already in flight when the
+        // switch happens), any trade that would fire under a different account is
+        // skipped instead of being silently placed on the wrong account.
+        const loginIdAtStart = (api_base.account_info as any)?.loginid;
+
         const delay = mode === 'FAST' ? 50 : 300;
         const timeoutIds: ReturnType<typeof setTimeout>[] = [];
         let cancelled = false;
@@ -210,6 +228,13 @@ export const useBulkTrader = () => {
         for (let i = 0; i < count; i++) {
             const id = setTimeout(async () => {
                 if (cancelled) return;
+
+                const currentLoginId = (api_base.account_info as any)?.loginid;
+                if (currentLoginId !== loginIdAtStart) {
+                    console.warn('[BulkTrader] Skipping trade — active account changed since this run started.');
+                    onTradeResult?.({ index: i, success: false, error: 'Account changed — trade skipped for safety.' });
+                    return;
+                }
 
                 try {
                     const dynamic = getDynamicParams();
@@ -221,9 +246,9 @@ export const useBulkTrader = () => {
                     // helper used by the rest of this app).
                     const req: any = {
                         buy: '1',
-                        price: staticParams.amount,
+                        price: dynamic.amount,
                         parameters: {
-                            amount: staticParams.amount,
+                            amount: dynamic.amount,
                             basis: 'stake',
                             contract_type: dynamic.contract_type,
                             currency: 'USD',
