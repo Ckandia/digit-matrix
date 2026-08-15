@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
-import { MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
+import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
 import './bulk-trader.scss';
 
@@ -27,6 +27,9 @@ const BulkTrader = () => {
     const [tradesFired, setTradesFired] = useState<number>(0);
     const [autoFlipEnabled, setAutoFlipEnabled] = useState<boolean>(false);
     const [stopWinEnabled, setStopWinEnabled] = useState<boolean>(false);
+    // Cap on how high Auto Flip's loss-recovery stake can climb — required whenever
+    // Auto Flip is on, to bound the risk of a losing streak (see runStakeRef below).
+    const [maxStake, setMaxStake] = useState<number>(5);
     // Digit actually locked in for the currently-running batch — shown in the status
     // pill so it can't drift out of sync with the live Prediction field in the
     // background (see runPredictionRef).
@@ -58,6 +61,17 @@ const BulkTrader = () => {
     // the side (Match/Differ, Over/Under, etc.) is allowed to change mid-run, via
     // Auto Flip — the digit itself never should.
     const runPredictionRef = useRef<number>(prediction);
+    // Current stake for the running batch. Starts at the base Stake field each run;
+    // when Auto Flip is on, a loss doubles it (classic martingale recovery — a win
+    // after N losses at doubling stakes recovers the prior losses plus the original
+    // target), capped at maxStake so a losing streak can't compound indefinitely. A
+    // win resets it back to the base stake. Read fresh per-trade (see useBulkTrader),
+    // same mechanism as directionRef/runPredictionRef.
+    const runStakeRef = useRef<number>(stake);
+    // Which account (loginid) this run started on — if the user switches accounts
+    // mid-run (demo<->real, or between two real accounts), the run is stopped
+    // immediately rather than continuing to fire trades under a different account.
+    const runLoginIdRef = useRef<string | undefined>(undefined);
 
     // Signal indicator: recommends a side (or digit) and cycles on a countdown so
     // the user has a consistent, structured moment to act rather than reacting to
@@ -135,6 +149,16 @@ const BulkTrader = () => {
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
 
+    // A few contract types require a different tick-duration range than the default
+    // 1-10 — e.g. Only Ups/Only Downs (RUNHIGH/RUNLOW) require 2-5 ticks specifically
+    // on Deriv's platform. Trading outside the range gets silently rejected, so the
+    // input's min/max follow this, and the value is clamped into range on switch.
+    const durationConstraint = DURATION_CONSTRAINTS[strategy] ?? DEFAULT_DURATION_CONSTRAINT;
+
+    useEffect(() => {
+        setDuration((prev) => Math.min(Math.max(prev, durationConstraint.min), durationConstraint.max));
+    }, [durationConstraint.min, durationConstraint.max]);
+
     // Even/Odd only cares about parity, so E/O is the clearer view. Every other
     // strategy (Matches, Differs, Over/Under, and the non-digit ones) is about the
     // specific digit, so show the real 0-9 value instead — matches how the digit
@@ -187,18 +211,21 @@ const BulkTrader = () => {
 
         directionRef.current = initialType;
         runPredictionRef.current = predictionRef.current; // lock the digit for this whole run
+        runStakeRef.current = stake; // reset to base stake at the start of every run
+        runLoginIdRef.current = accountInfo?.loginid; // remember which account this run is for
         setLockedPrediction(requiresPrediction ? predictionRef.current : null);
         cumulativeProfitRef.current = 0;
         setLastError(null);
         setTradesFired(0);
 
         // getDynamicParams is called fresh by useBulkTrader immediately before each
-        // individual trade fires. contract_type reads directionRef (which Auto Flip
-        // can change trade-to-trade), but prediction reads the fixed run-start
-        // snapshot — the digit stays the same for every trade in this batch.
+        // individual trade fires. contract_type and amount can change trade-to-trade
+        // (Auto Flip / loss-recovery); prediction reads the fixed run-start snapshot
+        // — the digit stays the same for every trade in this batch.
         const getDynamicParams = () => ({
             contract_type: directionRef.current,
             prediction: requiresPrediction ? runPredictionRef.current : undefined,
+            amount: runStakeRef.current,
         });
 
         const cancel = executeBulkTrades(
@@ -206,7 +233,6 @@ const BulkTrader = () => {
             bulkCount, // TOTAL trades for this run — fires exactly this many, then stops.
             {
                 symbol: MARKET_MAPPING[market],
-                amount: stake,
                 duration,
             },
             getDynamicParams,
@@ -230,15 +256,22 @@ const BulkTrader = () => {
                     }
                 }
 
-                // Auto Flip: switch to the opposite side of the current strategy pair
-                // after any loss (Even -> Odd, Over -> Under, Match -> Differ, etc).
-                // Writes directionRef, which getDynamicParams reads fresh on the very
-                // next trade in this same batch.
-                if (autoFlipEnabled && !settled.won) {
-                    directionRef.current =
-                        directionRef.current === pair.left.contract_type
-                            ? pair.right.contract_type
-                            : pair.left.contract_type;
+                if (autoFlipEnabled) {
+                    if (settled.won) {
+                        // Reset the recovery stake back to the base amount after a win.
+                        runStakeRef.current = stake;
+                    } else {
+                        // Switch to the opposite side of the current strategy pair
+                        // after a loss (Even -> Odd, Over -> Under, Match -> Differ,
+                        // etc), and double the stake so a win on the next trade
+                        // recovers this loss — classic martingale recovery, capped at
+                        // maxStake so a losing streak can't compound indefinitely.
+                        directionRef.current =
+                            directionRef.current === pair.left.contract_type
+                                ? pair.right.contract_type
+                                : pair.left.contract_type;
+                        runStakeRef.current = Math.min(runStakeRef.current * 2, maxStake);
+                    }
                 }
             }
         );
@@ -257,7 +290,7 @@ const BulkTrader = () => {
         }, totalFireDurationMs);
 
         setRunningButton(button);
-    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, pair, strategy, stopLoop]);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo]);
 
     // Press once to start, press the same button again to stop early.
     const handleToggle = (button: ActionButton) => {
@@ -278,12 +311,15 @@ const BulkTrader = () => {
         };
     }, []);
 
-    // Auto-stop if the connection to the account drops while a loop is running.
+    // Auto-stop if the connection to the account drops, OR if the active account
+    // changes, while a run is active — prevents a batch that was started for one
+    // account from continuing to fire trades after the user switches accounts.
     useEffect(() => {
-        if (!canTrade && runningButton) {
+        if (!runningButton) return;
+        if (!canTrade || accountInfo?.loginid !== runLoginIdRef.current) {
             stopLoop();
         }
-    }, [canTrade, runningButton, stopLoop]);
+    }, [canTrade, runningButton, accountInfo?.loginid, stopLoop]);
 
     const formDisabled = !!runningButton;
 
@@ -392,8 +428,8 @@ const BulkTrader = () => {
                             <label>DURATION (TICKS)</label>
                             <input 
                                 type="number" 
-                                min="1" 
-                                max="10" 
+                                min={durationConstraint.min} 
+                                max={durationConstraint.max} 
                                 value={duration} 
                                 disabled={formDisabled}
                                 onChange={(e) => setDuration(Number(e.target.value))} 
@@ -422,7 +458,7 @@ const BulkTrader = () => {
                             />
                             <span>
                                 Auto Flip
-                                <small>Switch between {pair.left.label} and {pair.right.label} after a loss</small>
+                                <small>Switch to {pair.right.label}/{pair.left.label} and double the stake to recover a loss</small>
                             </span>
                         </label>
                         <label className="checkbox-field">
@@ -438,6 +474,23 @@ const BulkTrader = () => {
                             </span>
                         </label>
                     </div>
+
+                    {autoFlipEnabled && (
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label>MAX STAKE (USD)</label>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    min={stake}
+                                    value={maxStake}
+                                    disabled={formDisabled}
+                                    onChange={(e) => setMaxStake(Number(e.target.value))}
+                                />
+                                <small className="field-hint">Caps how high the recovery stake can climb after repeated losses</small>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Digit Visualizer Display */}
