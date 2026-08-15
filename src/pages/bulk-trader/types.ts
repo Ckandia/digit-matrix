@@ -30,8 +30,8 @@ export const STRATEGY_MAPPING: Record<string, string> = {
     'Under': 'DIGITUNDER',
     'Rise': 'CALL',
     'Fall': 'PUT',
-    'Only Ups': 'CALL',
-    'Only Downs': 'PUT',
+    'Only Ups': 'RUNHIGH',
+    'Only Downs': 'RUNLOW',
     'Rise Equals': 'CALLE',
     'Fall Equals': 'PUTE',
 };
@@ -60,11 +60,25 @@ export const STRATEGY_PAIR_MAPPING: Record<string, StrategyPair> = {
     'Under': { left: { label: 'Over', contract_type: 'DIGITOVER' }, right: { label: 'Under', contract_type: 'DIGITUNDER' } },
     'Rise': { left: { label: 'Rise', contract_type: 'CALL' }, right: { label: 'Fall', contract_type: 'PUT' } },
     'Fall': { left: { label: 'Rise', contract_type: 'CALL' }, right: { label: 'Fall', contract_type: 'PUT' } },
-    'Only Ups': { left: { label: 'Only Ups', contract_type: 'CALL' }, right: { label: 'Only Downs', contract_type: 'PUT' } },
-    'Only Downs': { left: { label: 'Only Ups', contract_type: 'CALL' }, right: { label: 'Only Downs', contract_type: 'PUT' } },
+    'Only Ups': { left: { label: 'Only Ups', contract_type: 'RUNHIGH' }, right: { label: 'Only Downs', contract_type: 'RUNLOW' } },
+    'Only Downs': { left: { label: 'Only Ups', contract_type: 'RUNHIGH' }, right: { label: 'Only Downs', contract_type: 'RUNLOW' } },
     'Rise Equals': { left: { label: 'Rise Equals', contract_type: 'CALLE' }, right: { label: 'Fall Equals', contract_type: 'PUTE' } },
     'Fall Equals': { left: { label: 'Rise Equals', contract_type: 'CALLE' }, right: { label: 'Fall Equals', contract_type: 'PUTE' } },
 };
+
+export interface DurationConstraint {
+    min: number;
+    max: number;
+}
+
+// Most digit/callput-style contracts accept 1-10 ticks, but a few contract types
+// have their own required range on Deriv's platform — trading outside it gets
+// rejected. Only Ups/Only Downs (RUNHIGH/RUNLOW) specifically require 2-5 ticks.
+export const DURATION_CONSTRAINTS: Record<string, DurationConstraint> = {
+    'Only Ups': { min: 2, max: 5 },
+    'Only Downs': { min: 2, max: 5 },
+};
+export const DEFAULT_DURATION_CONSTRAINT: DurationConstraint = { min: 1, max: 10 };
 
 export interface TickData {
     epoch: number;
