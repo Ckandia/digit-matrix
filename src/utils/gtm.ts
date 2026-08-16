@@ -1,88 +1,29 @@
 // @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
-import { reaction } from 'mobx';
-import { TStatistics } from '@/components/transaction-details/transaction-details.types';
+//
+// GTM tracking has been intentionally disabled. The GTM container ID wired in here
+// (and the ones in index.html) did not belong to this app's owner — meaning account
+// login IDs and real trading statistics (stake, payout, profit) were being sent to
+// an unverified third party's Google Tag Manager account on every bot run. All
+// functions below are now safe no-ops so nothing elsewhere that calls GTM.* breaks,
+// but no script is loaded and no data is ever sent anywhere.
 import RootStore from '@/stores/root-store';
 import { ProposalOpenContract } from '@deriv/api-types';
 
 const GTM = (() => {
-    let timeoutId: NodeJS.Timeout;
-    let initialized = false;
-    const pushDataLayer = (data: { [key: string]: string | number | boolean; event: string }): void => {
-        window.dataLayer?.push(data);
-    };
-
     const init = (_root_store: RootStore): void => {
-        if (initialized) return;
-        initialized = true;
-
-        function loadGTM() {
-            (function (w, d, s, l, i) {
-                w[l] = w[l] || [];
-                w[l].push({
-                    'gtm.start': new Date().getTime(),
-                    event: 'gtm.js',
-                });
-                const f = d.getElementsByTagName(s)[0],
-                    j = d.createElement(s),
-                    dl = l != 'dataLayer' ? '&l=' + l : '';
-                j.defer = true;
-                j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
-                f.parentNode.insertBefore(j, f);
-            })(window, document, 'script', 'dataLayer', 'GTM-NF7884S');
-        }
-
-        setTimeout(() => {
-            loadGTM();
-        }, 3000);
-
-        try {
-            const { run_panel, transactions, client, common } = _root_store;
-            reaction(
-                () => run_panel.is_running,
-                (() => {
-                    return () => {
-                        if (run_panel.is_running) {
-                            clearTimeout(timeoutId);
-                            timeoutId = setTimeout(() => {
-                                onRunBot(client?.loginid, common?.server_time?.unix(), transactions?.statistics);
-                            }, 500);
-                        }
-                    };
-                })()
-            );
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.warn('Error initializing GTM reactions ', error);
-        }
+        // Intentionally does nothing — see note above.
     };
 
-    const onRunBot = (login_id: string, server_time: number, statistics: TStatistics): void => {
-        try {
-            const run_id = `${login_id}-${server_time}`;
-            const counters = `tr:${statistics.number_of_runs},\
-                ts:${statistics.total_stake},\
-                py:${statistics.total_payout},\
-                lc:${statistics.lost_contracts},\
-                wc:${statistics.won_contracts},\
-                pr:${statistics.total_profit}`;
-
-            const data = {
-                counters: counters.replace(/\s/g, ''),
-                event: 'dbot_run',
-                run_id,
-            };
-            pushDataLayer(data);
-        } catch (error) {
-            console.warn('Error pushing run data to datalayer ', error); // eslint-disable-line no-console
-        }
+    const pushDataLayer = (_data: { [key: string]: string | number | boolean; event: string }): void => {
+        // Intentionally does nothing — see note above.
     };
 
-    const onTransactionClosed = (contract: ProposalOpenContract): void => {
-        const data = {
-            event: 'dbot_run_transaction',
-            reference_id: contract?.contract_id ?? '',
-        };
-        pushDataLayer(data);
+    const onRunBot = (_login_id: string, _server_time: number, _statistics: unknown): void => {
+        // Intentionally does nothing — see note above.
+    };
+
+    const onTransactionClosed = (_contract: ProposalOpenContract): void => {
+        // Intentionally does nothing — see note above.
     };
 
     return {
