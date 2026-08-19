@@ -108,9 +108,11 @@ const BulkTrader = () => {
 
     // Signal cycle: wait for enough tick data, lock in a signal, count down, flash
     // "ENTER NOW" at zero, then compute a fresh signal for the next cycle. Restarts
-    // when strategy or market changes. Deliberately does NOT depend on `prediction`
-    // (reads it via predictionRef instead) — since applySignal can itself update
-    // prediction, depending on it here would restart this effect every cycle.
+    // when strategy, market, or duration changes (duration changes what window the
+    // price-direction contracts are checked over — see signal.ts). Deliberately does
+    // NOT depend on `prediction` (reads it via predictionRef instead) — since
+    // applySignal can itself update prediction, depending on it here would restart
+    // this effect every cycle.
     useEffect(() => {
         setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
@@ -119,7 +121,7 @@ const BulkTrader = () => {
         let hasSignal = false;
         const tryComputeInitial = () => {
             if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current));
+                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                 return true;
             }
             return false;
@@ -135,7 +137,7 @@ const BulkTrader = () => {
                 if (prev <= 1) {
                     setIsEnterNow(true);
                     setTimeout(() => {
-                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current));
+                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                         setIsEnterNow(false);
                     }, ENTER_NOW_DISPLAY_MS);
                     return SIGNAL_CYCLE_SECONDS;
@@ -145,7 +147,7 @@ const BulkTrader = () => {
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [strategy, market, applySignal]);
+    }, [strategy, market, duration, applySignal]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
 
@@ -273,21 +275,42 @@ const BulkTrader = () => {
                         runStakeRef.current = Math.min(runStakeRef.current * 2, maxStake);
                     }
                 }
+            },
+            // Sequential mode is required whenever Auto Flip or Stop Win is active —
+            // see the big comment in useBulkTrader.executeBulkTrades for why: without
+            // it, the whole batch fires before the first trade even settles, so a
+            // flip-after-loss or stop-after-profit decision never gets a chance to
+            // affect any of the remaining trades.
+            autoFlipEnabled || stopWinEnabled,
+            () => {
+                // Fires once all bulkCount trades have been fired (sequential mode:
+                // after the last one has also settled). This is the accurate signal
+                // that the run is done — replaces guessing at a fixed timeout.
+                setRunningButton(null);
+                setLockedPrediction(null);
+                if (completionTimeoutRef.current) {
+                    clearTimeout(completionTimeoutRef.current);
+                    completionTimeoutRef.current = null;
+                }
             }
         );
 
         cancelRunRef.current = cancel;
 
-        // Auto-return to idle once all bulkCount trades have been fired (not
-        // necessarily settled yet — settlement continues updating Transactions/
-        // Summary/Journal in the background regardless of this UI state).
+        // Safety-net only: if something goes wrong (e.g. a proposal_open_contract
+        // subscription never resolves after a network hiccup) and onBatchComplete
+        // above never fires, this guarantees the UI doesn't stay stuck on "running"
+        // forever. Generous on purpose — sequential runs can legitimately take a
+        // while (each trade waits for its own settlement).
         const delayPerTrade = executionMode === 'FAST' ? 50 : 300;
-        const totalFireDurationMs = bulkCount * delayPerTrade + 500;
+        const sequentialSafetyMs = bulkCount * 15000; // ~15s per trade, generous ceiling
+        const burstSafetyMs = bulkCount * delayPerTrade + 2000;
+        const safetyMs = (autoFlipEnabled || stopWinEnabled) ? sequentialSafetyMs : burstSafetyMs;
         completionTimeoutRef.current = setTimeout(() => {
             setRunningButton(null);
             setLockedPrediction(null);
             completionTimeoutRef.current = null;
-        }, totalFireDurationMs);
+        }, safetyMs);
 
         setRunningButton(button);
     }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo]);
@@ -342,23 +365,28 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {/* Signal Indicator — recommends a side/digit and cycles on a countdown */}
+            {/* Signal Indicator — shows the recent split plainly; only highlights a
+                side when it's meaningfully lopsided (not a confidence score, just a
+                display threshold — see signal.ts for why no score is computed) */}
             {signal ? (
-                <div className={`signal-card ${isEnterNow ? 'enter-now' : ''}`}>
+                <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
                     <div className="signal-info">
                         <span className="signal-label">SIGNAL</span>
                         <span className="signal-value">
-                            {signal.digit !== undefined ? `${signal.label} · Digit ${signal.digit}` : signal.label}
+                            {signal.noTrade
+                                ? 'NO TRADE — too close to call'
+                                : (signal.digit !== undefined ? `${signal.label} · Digit ${signal.digit}` : signal.label)}
                         </span>
+                        <span className="signal-split">{signal.splitLabel}</span>
                     </div>
                     <div className="signal-countdown">
-                        {isEnterNow ? (
+                        {isEnterNow && !signal.noTrade ? (
                             <span className="enter-now-text">ENTER NOW</span>
                         ) : (
                             <span>Next signal in {signalCountdown}s</span>
                         )}
                     </div>
-                    {signal.digit !== undefined && (
+                    {!signal.noTrade && signal.digit !== undefined && (
                         <span className="signal-auto-applied">Prediction auto-set to {signal.digit}</span>
                     )}
                 </div>
@@ -502,7 +530,7 @@ const BulkTrader = () => {
             {/* Bulk Action Controls — press once to start, press again to stop */}
             <div className="action-pad-card">
                 <button 
-                    className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' ? 'signal-match' : ''}`}
+                    className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' && !signal?.noTrade ? 'signal-match' : ''}`}
                     onClick={() => handleToggle('Left')}
                     disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
                 >
@@ -517,7 +545,7 @@ const BulkTrader = () => {
                     {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
                 </button>
                 <button 
-                    className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' ? 'signal-match' : ''}`}
+                    className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' && !signal?.noTrade ? 'signal-match' : ''}`}
                     onClick={() => handleToggle('Right')}
                     disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
                 >
@@ -535,6 +563,7 @@ const BulkTrader = () => {
                                 {runningButton === 'Left' ? pair.left.label : runningButton === 'Right' ? pair.right.label : `AI (${strategy})`}
                                 {lockedPrediction !== null ? ` · Digit ${lockedPrediction}` : ''}
                             </strong> · {tradesFired}/{bulkCount} trade{bulkCount === 1 ? '' : 's'} fired
+                            {(autoFlipEnabled || stopWinEnabled) && ' · sequential (waiting for each result)'}
                         </span>
                     ) : (
                         <span>Idle</span>
