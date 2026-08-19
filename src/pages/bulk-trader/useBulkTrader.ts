@@ -200,13 +200,26 @@ export const useBulkTrader = () => {
     // this is what lets Auto Flip, an updated Prediction digit, and a stake-recovery
     // increase all take effect trade-by-trade within a single run, not just between
     // separate runs.
+    //
+    // sequential MUST be true whenever Auto Flip or Stop Win is active. Reasoning:
+    // in the default (non-sequential) mode, all `count` trades are staggered only
+    // 50-300ms apart, but each trade takes at least one tick's duration (often
+    // 1-2+ seconds) to settle. That means the whole batch is usually done FIRING
+    // before the FIRST trade even settles — so a flip-after-loss or stop-after-profit
+    // decision never has a chance to affect any of the remaining trades; they've
+    // already gone out with the original direction/stake. Sequential mode fires one
+    // trade, awaits its full settlement (via trackContract's callback), THEN decides
+    // whether to flip/stop before firing the next — which is the only way Auto Flip
+    // or Stop Win can actually behave as intended.
     const executeBulkTrades = useCallback((
         mode: TradeExecutionMode,
         count: number,
         staticParams: { symbol: string; duration: number },
         getDynamicParams: () => { contract_type: string; prediction?: number; amount: number },
         onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void,
-        onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
+        onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void,
+        sequential: boolean = false,
+        onBatchComplete?: () => void
     ): (() => void) => {
         if (!api_base.api || !api_base.is_authorized) {
             console.error('[BulkTrader] Cannot trade — not connected/authorized to a Deriv account.');
@@ -222,80 +235,116 @@ export const useBulkTrader = () => {
         const loginIdAtStart = (api_base.account_info as any)?.loginid;
 
         const delay = mode === 'FAST' ? 50 : 300;
-        const timeoutIds: ReturnType<typeof setTimeout>[] = [];
         let cancelled = false;
 
-        for (let i = 0; i < count; i++) {
-            const id = setTimeout(async () => {
+        const fireOneTrade = async (i: number): Promise<void> => {
+            if (cancelled) return;
+
+            const currentLoginId = (api_base.account_info as any)?.loginid;
+            if (currentLoginId !== loginIdAtStart) {
+                console.warn('[BulkTrader] Skipping trade — active account changed since this run started.');
+                onTradeResult?.({ index: i, success: false, error: 'Account changed — trade skipped for safety.' });
+                return;
+            }
+
+            try {
+                const dynamic = getDynamicParams();
+
+                // Deriv direct proposal + buy request payload.
+                // IMPORTANT: the API expects "underlying_symbol" in parameters, not
+                // "symbol" — using the wrong key here causes every buy to be silently
+                // rejected (confirmed against the working Purchase.js -> tradeOptionToBuy
+                // helper used by the rest of this app).
+                const req: any = {
+                    buy: '1',
+                    price: dynamic.amount,
+                    parameters: {
+                        amount: dynamic.amount,
+                        basis: 'stake',
+                        contract_type: dynamic.contract_type,
+                        currency: 'USD',
+                        duration: staticParams.duration,
+                        duration_unit: 't',
+                        underlying_symbol: staticParams.symbol,
+                    }
+                };
+
+                if (dynamic.prediction !== undefined) {
+                    req.parameters.barrier = String(dynamic.prediction);
+                }
+
+                console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
+                const response: any = await api_base.api.send(req);
+                console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
+
                 if (cancelled) return;
 
-                const currentLoginId = (api_base.account_info as any)?.loginid;
-                if (currentLoginId !== loginIdAtStart) {
-                    console.warn('[BulkTrader] Skipping trade — active account changed since this run started.');
-                    onTradeResult?.({ index: i, success: false, error: 'Account changed — trade skipped for safety.' });
-                    return;
-                }
+                if (response?.error) {
+                    // Surface the real Deriv error (message + code) instead of a
+                    // generic fallback string, so failures are actually diagnosable.
+                    const errMsg =
+                        response.error.message ||
+                        `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
+                    onTradeResult?.({ index: i, success: false, error: errMsg });
+                } else {
+                    if (response?.buy?.contract_id) {
+                        journal.onLogSuccess({
+                            log_type: LogTypes.PURCHASE,
+                            extra: { transaction_id: response.buy.transaction_id } as any,
+                        });
 
-                try {
-                    const dynamic = getDynamicParams();
-
-                    // Deriv direct proposal + buy request payload.
-                    // IMPORTANT: the API expects "underlying_symbol" in parameters, not
-                    // "symbol" — using the wrong key here causes every buy to be silently
-                    // rejected (confirmed against the working Purchase.js -> tradeOptionToBuy
-                    // helper used by the rest of this app).
-                    const req: any = {
-                        buy: '1',
-                        price: dynamic.amount,
-                        parameters: {
-                            amount: dynamic.amount,
-                            basis: 'stake',
-                            contract_type: dynamic.contract_type,
-                            currency: 'USD',
-                            duration: staticParams.duration,
-                            duration_unit: 't',
-                            underlying_symbol: staticParams.symbol,
-                        }
-                    };
-
-                    if (dynamic.prediction !== undefined) {
-                        req.parameters.barrier = String(dynamic.prediction);
-                    }
-
-                    console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
-                    const response: any = await api_base.api.send(req);
-                    console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
-
-                    if (cancelled) return;
-
-                    if (response?.error) {
-                        // Surface the real Deriv error (message + code) instead of a
-                        // generic fallback string, so failures are actually diagnosable.
-                        const errMsg =
-                            response.error.message ||
-                            `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
-                        onTradeResult?.({ index: i, success: false, error: errMsg });
-                    } else {
-                        if (response?.buy?.contract_id) {
-                            journal.onLogSuccess({
-                                log_type: LogTypes.PURCHASE,
-                                extra: { transaction_id: response.buy.transaction_id } as any,
+                        if (sequential) {
+                            // Wait for this contract to fully settle before returning,
+                            // so the caller's for-loop below only proceeds to the next
+                            // trade once Auto Flip/Stop Win have had a chance to react.
+                            await new Promise<void>((resolve) => {
+                                trackContract(response.buy.contract_id, dynamic.contract_type, (settled) => {
+                                    onContractSettled?.(settled);
+                                    resolve();
+                                });
                             });
+                        } else {
                             trackContract(response.buy.contract_id, dynamic.contract_type, onContractSettled);
                         }
-                        onTradeResult?.({ index: i, success: true });
                     }
-                } catch (err: any) {
-                    console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
-                    onTradeResult?.({ index: i, success: false, error: err?.message || 'Trade failed (network/unknown error)' });
+                    onTradeResult?.({ index: i, success: true });
                 }
-            }, i * delay);
-            timeoutIds.push(id);
+            } catch (err: any) {
+                console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
+                onTradeResult?.({ index: i, success: false, error: err?.message || 'Trade failed (network/unknown error)' });
+            }
+        };
+
+        const timeoutIds: ReturnType<typeof setTimeout>[] = [];
+
+        if (sequential) {
+            (async () => {
+                for (let i = 0; i < count; i++) {
+                    if (cancelled) break;
+                    await fireOneTrade(i);
+                    if (cancelled) break;
+                    if (i < count - 1) {
+                        await new Promise((resolve) => setTimeout(resolve, delay));
+                    }
+                }
+                if (!cancelled) onBatchComplete?.();
+            })();
+        } else {
+            let completedCount = 0;
+            for (let i = 0; i < count; i++) {
+                const id = setTimeout(async () => {
+                    await fireOneTrade(i);
+                    completedCount += 1;
+                    if (completedCount === count && !cancelled) onBatchComplete?.();
+                }, i * delay);
+                timeoutIds.push(id);
+            }
         }
 
         // Cancel function — stops any not-yet-fired trades in this batch. Used for
         // both manual Stop and Stop Win (which needs to halt remaining trades the
-        // instant the session turns profitable, not just after the whole batch fires).
+        // instant the session turns profitable — and with sequential mode, this now
+        // actually works, since the loop checks `cancelled` before firing each trade).
         return () => {
             cancelled = true;
             timeoutIds.forEach((id) => clearTimeout(id));
