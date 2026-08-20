@@ -81,6 +81,9 @@ const BulkTrader = () => {
     const [signalCountdown, setSignalCountdown] = useState<number>(SIGNAL_CYCLE_SECONDS);
     const [isEnterNow, setIsEnterNow] = useState<boolean>(false);
     const tickSequenceRef = useRef<TickData[]>([]);
+    // Keeps the signal refreshing every 500ms during the "ENTER NOW" flash — see
+    // the timing fix below for why.
+    const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
@@ -113,6 +116,16 @@ const BulkTrader = () => {
     // NOT depend on `prediction` (reads it via predictionRef instead) — since
     // applySignal can itself update prediction, depending on it here would restart
     // this effect every cycle.
+    //
+    // TIMING FIX: the signal shown during "ENTER NOW" is now recomputed at the exact
+    // moment the flash starts, not 20 seconds earlier. Previously the signal was
+    // locked in at the start of the countdown and held frozen for the full 20s while
+    // fresh ticks kept arriving in the background — so by the time "ENTER NOW"
+    // appeared, the recommendation could already be based on up to 20 stale ticks
+    // (a lot, on a 1-second-tick market). That's what caused entries to feel early or
+    // late. It's also refreshed every 500ms for the duration of the flash itself, so
+    // whenever within that window you actually click, it's based on very recent data
+    // rather than a single snapshot from the instant the flash began.
     useEffect(() => {
         setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
@@ -135,18 +148,37 @@ const BulkTrader = () => {
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
+                    // Compute fresh RIGHT NOW, at the moment the flash begins — this is
+                    // the data the user will actually act on.
+                    applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                     setIsEnterNow(true);
-                    setTimeout(() => {
+
+                    if (enterNowRefreshRef.current) clearInterval(enterNowRefreshRef.current);
+                    enterNowRefreshRef.current = setInterval(() => {
                         applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                    }, 500);
+
+                    setTimeout(() => {
+                        if (enterNowRefreshRef.current) {
+                            clearInterval(enterNowRefreshRef.current);
+                            enterNowRefreshRef.current = null;
+                        }
                         setIsEnterNow(false);
                     }, ENTER_NOW_DISPLAY_MS);
+
                     return SIGNAL_CYCLE_SECONDS;
                 }
                 return prev - 1;
             });
         }, 1000);
 
-        return () => clearInterval(interval);
+        return () => {
+            clearInterval(interval);
+            if (enterNowRefreshRef.current) {
+                clearInterval(enterNowRefreshRef.current);
+                enterNowRefreshRef.current = null;
+            }
+        };
     }, [strategy, market, duration, applySignal]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
