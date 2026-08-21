@@ -237,6 +237,25 @@ export const useBulkTrader = () => {
         const delay = mode === 'FAST' ? 50 : 300;
         let cancelled = false;
 
+        // Some errors mean every remaining trade in this batch will fail the exact
+        // same way — e.g. a daily turnover limit, once hit, doesn't reset mid-batch.
+        // Continuing to fire the rest of the batch in that case just wastes time and
+        // hammers the API with guaranteed failures. Detected by message/code text
+        // since Deriv doesn't give us a clean single error-code enum to check against
+        // here — this is a best-effort match on the known phrasing for these cases.
+        const isFatalAccountError = (error: any): boolean => {
+            const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+            return (
+                text.includes('turnover limit') ||
+                text.includes('daily limit') ||
+                text.includes('trading limit') ||
+                text.includes('insufficient balance') ||
+                text.includes('self-exclusion') ||
+                text.includes('self exclusion') ||
+                text.includes('exceed your')
+            );
+        };
+
         const fireOneTrade = async (i: number): Promise<void> => {
             if (cancelled) return;
 
@@ -282,10 +301,16 @@ export const useBulkTrader = () => {
                 if (response?.error) {
                     // Surface the real Deriv error (message + code) instead of a
                     // generic fallback string, so failures are actually diagnosable.
-                    const errMsg =
+                    const fatal = isFatalAccountError(response.error);
+                    const baseMsg =
                         response.error.message ||
                         `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
+                    const errMsg = fatal ? `${baseMsg} — stopping remaining trades in this batch` : baseMsg;
                     onTradeResult?.({ index: i, success: false, error: errMsg });
+
+                    if (fatal) {
+                        cancelled = true;
+                    }
                 } else {
                     if (response?.buy?.contract_id) {
                         journal.onLogSuccess({
@@ -327,7 +352,10 @@ export const useBulkTrader = () => {
                         await new Promise((resolve) => setTimeout(resolve, delay));
                     }
                 }
-                if (!cancelled) onBatchComplete?.();
+                // Always fire, whether the batch finished normally or stopped early
+                // (manual stop, Stop Win, or a fatal account error above) — otherwise
+                // the UI would stay stuck showing "running" until the safety timeout.
+                onBatchComplete?.();
             })();
         } else {
             let completedCount = 0;
@@ -335,7 +363,7 @@ export const useBulkTrader = () => {
                 const id = setTimeout(async () => {
                     await fireOneTrade(i);
                     completedCount += 1;
-                    if (completedCount === count && !cancelled) onBatchComplete?.();
+                    if (completedCount === count) onBatchComplete?.();
                 }, i * delay);
                 timeoutIds.push(id);
             }
