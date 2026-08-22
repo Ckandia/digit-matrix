@@ -5,7 +5,7 @@ import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRA
 import { computeSignal, TradeSignal } from './signal';
 import './bulk-trader.scss';
 
-type ActionButton = 'Left' | 'AI' | 'Right';
+type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
 const SIGNAL_CYCLE_SECONDS = 20;
 const ENTER_NOW_DISPLAY_MS = 3000;
 // Wait for at least this many ticks before showing a first signal, so the very
@@ -27,6 +27,10 @@ const BulkTrader = () => {
     const [tradesFired, setTradesFired] = useState<number>(0);
     const [autoFlipEnabled, setAutoFlipEnabled] = useState<boolean>(false);
     const [stopWinEnabled, setStopWinEnabled] = useState<boolean>(false);
+    // Fires trades on BOTH sides of the current pair at once each round (e.g. Even
+    // AND Odd, Rise AND Fall). Mutually exclusive with Auto Flip — there's no
+    // "opposite side" to flip to when both are already being traded every round.
+    const [bothSidesEnabled, setBothSidesEnabled] = useState<boolean>(false);
     // Cap on how high Auto Flip's loss-recovery stake can climb — required whenever
     // Auto Flip is on, to bound the risk of a losing streak (see runStakeRef below).
     const [maxStake, setMaxStake] = useState<number>(5);
@@ -44,9 +48,10 @@ const BulkTrader = () => {
     const directionRef = useRef<string>('');
     // Running total profit for the current session — checked by Stop Win.
     const cumulativeProfitRef = useRef<number>(0);
-    // Cancels any not-yet-fired trades in the current batch — used by manual Stop
-    // and by Stop Win (which needs to halt remaining trades immediately).
-    const cancelRunRef = useRef<() => void>(() => {});
+    // Cancels any not-yet-fired trades in the current batch(es) — used by manual
+    // Stop and by Stop Win (which needs to halt remaining trades immediately). An
+    // array because Both Sides mode runs two parallel batches at once.
+    const cancelFnsRef = useRef<Array<() => void>>([]);
     // Auto-clears the "running" UI state once the fixed-size batch has finished
     // firing all its trades (bulkCount total, not repeating forever).
     const completionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,12 +220,12 @@ const BulkTrader = () => {
     // authorized against the logged-in account (not just socket-open).
     const canTrade = isConnected && isAuthorized;
 
-    // Stops the current run: cancels any not-yet-fired trades in the batch, clears
-    // the auto-completion timer, and resets the UI to idle. Used for manual Stop,
-    // Stop Win, and cleanup on unmount/disconnect.
+    // Stops the current run: cancels any not-yet-fired trades in the batch(es),
+    // clears the auto-completion timer, and resets the UI to idle. Used for manual
+    // Stop, Stop Win, and cleanup on unmount/disconnect.
     const stopLoop = useCallback(() => {
-        cancelRunRef.current();
-        cancelRunRef.current = () => {};
+        cancelFnsRef.current.forEach((fn) => fn());
+        cancelFnsRef.current = [];
         if (completionTimeoutRef.current) {
             clearTimeout(completionTimeoutRef.current);
             completionTimeoutRef.current = null;
@@ -230,20 +235,15 @@ const BulkTrader = () => {
     }, []);
 
     const startLoop = useCallback((button: ActionButton) => {
-        // Only one button can be actively firing trades at a time — starting a
-        // new one cancels whichever was previously running.
-        cancelRunRef.current();
+        // Only one run can be active at a time — starting a new one cancels
+        // whichever batch(es) were previously running.
+        cancelFnsRef.current.forEach((fn) => fn());
+        cancelFnsRef.current = [];
         if (completionTimeoutRef.current) {
             clearTimeout(completionTimeoutRef.current);
             completionTimeoutRef.current = null;
         }
 
-        const initialType =
-            button === 'Left' ? pair.left.contract_type :
-            button === 'Right' ? pair.right.contract_type :
-            STRATEGY_MAPPING[strategy];
-
-        directionRef.current = initialType;
         runPredictionRef.current = predictionRef.current; // lock the digit for this whole run
         runStakeRef.current = stake; // reset to base stake at the start of every run
         runLoginIdRef.current = accountInfo?.loginid; // remember which account this run is for
@@ -252,72 +252,51 @@ const BulkTrader = () => {
         setLastError(null);
         setTradesFired(0);
 
-        // getDynamicParams is called fresh by useBulkTrader immediately before each
-        // individual trade fires. contract_type and amount can change trade-to-trade
-        // (Auto Flip / loss-recovery); prediction reads the fixed run-start snapshot
-        // — the digit stays the same for every trade in this batch.
-        const getDynamicParams = () => ({
-            contract_type: directionRef.current,
-            prediction: requiresPrediction ? runPredictionRef.current : undefined,
-            amount: runStakeRef.current,
-        });
+        const sequential = autoFlipEnabled || stopWinEnabled;
 
-        const cancel = executeBulkTrades(
-            executionMode,
-            bulkCount, // TOTAL trades for this run — fires exactly this many, then stops.
-            {
-                symbol: MARKET_MAPPING[market],
-                duration,
-            },
-            getDynamicParams,
-            (result) => {
-                if (result.success) {
-                    setTradesFired((prev) => prev + 1);
-                } else if (result.error) {
-                    setLastError(result.error);
-                }
-            },
-            (settled) => {
-                // Stop Win: accumulate profit across the run; the moment we're net
-                // positive, cancel any remaining not-yet-fired trades immediately —
-                // matches "no more trades once the session is in profit" rather than
-                // letting the rest of the batch fire first.
-                if (stopWinEnabled) {
-                    cumulativeProfitRef.current += settled.profit;
-                    if (cumulativeProfitRef.current > 0) {
-                        stopLoop();
-                        return;
-                    }
-                }
+        const onTradeResult = (result: { index: number; success: boolean; error?: string }) => {
+            if (result.success) {
+                setTradesFired((prev) => prev + 1);
+            } else if (result.error) {
+                setLastError(result.error);
+            }
+        };
 
-                if (autoFlipEnabled) {
-                    if (settled.won) {
-                        // Reset the recovery stake back to the base amount after a win.
-                        runStakeRef.current = stake;
-                    } else {
-                        // Switch to the opposite side of the current strategy pair
-                        // after a loss (Even -> Odd, Over -> Under, Match -> Differ,
-                        // etc), and double the stake so a win on the next trade
-                        // recovers this loss — classic martingale recovery, capped at
-                        // maxStake so a losing streak can't compound indefinitely.
-                        directionRef.current =
-                            directionRef.current === pair.left.contract_type
-                                ? pair.right.contract_type
-                                : pair.left.contract_type;
-                        runStakeRef.current = Math.min(runStakeRef.current * 2, maxStake);
-                    }
+        const onContractSettled = (settled: { contract_type: string; profit: number; won: boolean }) => {
+            // Always track cumulative session P&L — both Stop Win and Auto Flip now
+            // key off the OVERALL running total, not just the single most recent
+            // trade's result.
+            cumulativeProfitRef.current += settled.profit;
+
+            // Stop Win: the moment the session is net positive, cancel any remaining
+            // not-yet-fired trades immediately — "no more trades once in profit"
+            // rather than letting the rest of the batch fire first.
+            if (stopWinEnabled && cumulativeProfitRef.current > 0) {
+                stopLoop();
+                return;
+            }
+
+            // Auto Flip now triggers off the OVERALL session P&L, not "did the last
+            // single trade lose" — e.g. if you're up overall, a single loss won't
+            // flip anything; it only flips while the session as a whole is behind.
+            if (autoFlipEnabled) {
+                if (cumulativeProfitRef.current < 0) {
+                    directionRef.current =
+                        directionRef.current === pair.left.contract_type
+                            ? pair.right.contract_type
+                            : pair.left.contract_type;
+                    runStakeRef.current = Math.min(runStakeRef.current * 2, maxStake);
+                } else {
+                    runStakeRef.current = stake;
                 }
-            },
-            // Sequential mode is required whenever Auto Flip or Stop Win is active —
-            // see the big comment in useBulkTrader.executeBulkTrades for why: without
-            // it, the whole batch fires before the first trade even settles, so a
-            // flip-after-loss or stop-after-profit decision never gets a chance to
-            // affect any of the remaining trades.
-            autoFlipEnabled || stopWinEnabled,
-            () => {
-                // Fires once all bulkCount trades have been fired (sequential mode:
-                // after the last one has also settled). This is the accurate signal
-                // that the run is done — replaces guessing at a fixed timeout.
+            }
+        };
+
+        const totalBatches = button === 'Both' ? 2 : 1;
+        let batchesRemaining = totalBatches;
+        const onOneBatchComplete = () => {
+            batchesRemaining -= 1;
+            if (batchesRemaining <= 0) {
                 setRunningButton(null);
                 setLockedPrediction(null);
                 if (completionTimeoutRef.current) {
@@ -325,19 +304,86 @@ const BulkTrader = () => {
                     completionTimeoutRef.current = null;
                 }
             }
-        );
+        };
 
-        cancelRunRef.current = cancel;
+        if (button === 'Both') {
+            // Buys both sides of the pair every round (e.g. Even AND Odd at once).
+            // Auto Flip is disabled in this mode (mutually exclusive in the UI —
+            // there's no "opposite side" to flip to when both are already being
+            // traded), so each side just fires at the fixed base stake/contract_type.
+            directionRef.current = pair.left.contract_type; // reference only, not used for flipping here
+            const cancelLeft = executeBulkTrades(
+                executionMode,
+                bulkCount,
+                { symbol: MARKET_MAPPING[market], duration },
+                () => ({
+                    contract_type: pair.left.contract_type,
+                    prediction: requiresPrediction ? runPredictionRef.current : undefined,
+                    amount: stake,
+                }),
+                onTradeResult,
+                onContractSettled,
+                sequential,
+                onOneBatchComplete
+            );
+            const cancelRight = executeBulkTrades(
+                executionMode,
+                bulkCount,
+                { symbol: MARKET_MAPPING[market], duration },
+                () => ({
+                    contract_type: pair.right.contract_type,
+                    prediction: requiresPrediction ? runPredictionRef.current : undefined,
+                    amount: stake,
+                }),
+                onTradeResult,
+                onContractSettled,
+                sequential,
+                onOneBatchComplete
+            );
+            cancelFnsRef.current = [cancelLeft, cancelRight];
+        } else {
+            const initialType =
+                button === 'Left' ? pair.left.contract_type :
+                button === 'Right' ? pair.right.contract_type :
+                STRATEGY_MAPPING[strategy];
+
+            directionRef.current = initialType;
+
+            // getDynamicParams is called fresh by useBulkTrader immediately before
+            // each individual trade fires. contract_type and amount can change
+            // trade-to-trade (Auto Flip / loss-recovery); prediction reads the fixed
+            // run-start snapshot — the digit stays the same for every trade in this
+            // batch.
+            const getDynamicParams = () => ({
+                contract_type: directionRef.current,
+                prediction: requiresPrediction ? runPredictionRef.current : undefined,
+                amount: runStakeRef.current,
+            });
+
+            const cancel = executeBulkTrades(
+                executionMode,
+                bulkCount, // TOTAL trades for this run — fires exactly this many, then stops.
+                { symbol: MARKET_MAPPING[market], duration },
+                getDynamicParams,
+                onTradeResult,
+                onContractSettled,
+                sequential,
+                onOneBatchComplete
+            );
+            cancelFnsRef.current = [cancel];
+        }
 
         // Safety-net only: if something goes wrong (e.g. a proposal_open_contract
-        // subscription never resolves after a network hiccup) and onBatchComplete
-        // above never fires, this guarantees the UI doesn't stay stuck on "running"
-        // forever. Generous on purpose — sequential runs can legitimately take a
-        // while (each trade waits for its own settlement).
+        // subscription never resolves after a network hiccup) and the batch-complete
+        // callback above never fires, this guarantees the UI doesn't stay stuck on
+        // "running" forever. Generous on purpose — sequential runs can legitimately
+        // take a while (each trade waits for its own settlement). Both-side batches
+        // run in parallel (not doubled end-to-end), so the timing math is the same
+        // regardless of whether one or two batches are active.
         const delayPerTrade = executionMode === 'FAST' ? 50 : 300;
         const sequentialSafetyMs = bulkCount * 15000; // ~15s per trade, generous ceiling
         const burstSafetyMs = bulkCount * delayPerTrade + 2000;
-        const safetyMs = (autoFlipEnabled || stopWinEnabled) ? sequentialSafetyMs : burstSafetyMs;
+        const safetyMs = sequential ? sequentialSafetyMs : burstSafetyMs;
         completionTimeoutRef.current = setTimeout(() => {
             setRunningButton(null);
             setLockedPrediction(null);
@@ -361,7 +407,7 @@ const BulkTrader = () => {
     // after the user navigates away from the tab.
     useEffect(() => {
         return () => {
-            cancelRunRef.current();
+            cancelFnsRef.current.forEach((fn) => fn());
             if (completionTimeoutRef.current) clearTimeout(completionTimeoutRef.current);
         };
     }, []);
@@ -513,12 +559,15 @@ const BulkTrader = () => {
                             <input
                                 type="checkbox"
                                 checked={autoFlipEnabled}
-                                disabled={formDisabled}
-                                onChange={(e) => setAutoFlipEnabled(e.target.checked)}
+                                disabled={formDisabled || bothSidesEnabled}
+                                onChange={(e) => {
+                                    setAutoFlipEnabled(e.target.checked);
+                                    if (e.target.checked) setBothSidesEnabled(false);
+                                }}
                             />
                             <span>
                                 Auto Flip
-                                <small>Switch to {pair.right.label}/{pair.left.label} and double the stake to recover a loss</small>
+                                <small>Switch to {pair.right.label}/{pair.left.label} and double the stake while the overall session is in loss</small>
                             </span>
                         </label>
                         <label className="checkbox-field">
@@ -535,6 +584,24 @@ const BulkTrader = () => {
                         </label>
                     </div>
 
+                    <div className="form-row checkbox-row">
+                        <label className="checkbox-field">
+                            <input
+                                type="checkbox"
+                                checked={bothSidesEnabled}
+                                disabled={formDisabled || autoFlipEnabled}
+                                onChange={(e) => {
+                                    setBothSidesEnabled(e.target.checked);
+                                    if (e.target.checked) setAutoFlipEnabled(false);
+                                }}
+                            />
+                            <span>
+                                Both Sides
+                                <small>Buy {pair.left.label} and {pair.right.label} at the same time every round — with sub-100% payouts this guarantees a net loss over many rounds (house edge on both sides), not a hedge</small>
+                            </span>
+                        </label>
+                    </div>
+
                     {autoFlipEnabled && (
                         <div className="form-row">
                             <div className="form-group">
@@ -547,7 +614,7 @@ const BulkTrader = () => {
                                     disabled={formDisabled}
                                     onChange={(e) => setMaxStake(Number(e.target.value))}
                                 />
-                                <small className="field-hint">Caps how high the recovery stake can climb after repeated losses</small>
+                                <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
                             </div>
                         </div>
                     )}
@@ -561,29 +628,41 @@ const BulkTrader = () => {
 
             {/* Bulk Action Controls — press once to start, press again to stop */}
             <div className="action-pad-card">
-                <button 
-                    className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' && !signal?.noTrade ? 'signal-match' : ''}`}
-                    onClick={() => handleToggle('Left')}
-                    disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
-                >
-                    <span className="icon">{runningButton === 'Left' ? '■' : '⧈'}</span>
-                    {runningButton === 'Left' ? 'Stop' : `Bulk ${pair.left.label}`}
-                </button>
-                <button 
-                    className={`btn-action-ai ${runningButton === 'AI' ? 'running' : ''}`}
-                    onClick={() => handleToggle('AI')}
-                    disabled={!canTrade || (formDisabled && runningButton !== 'AI')}
-                >
-                    {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
-                </button>
-                <button 
-                    className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' && !signal?.noTrade ? 'signal-match' : ''}`}
-                    onClick={() => handleToggle('Right')}
-                    disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
-                >
-                    <span className="icon">{runningButton === 'Right' ? '■' : '▲'}</span>
-                    {runningButton === 'Right' ? 'Stop' : `Bulk ${pair.right.label}`}
-                </button>
+                {bothSidesEnabled ? (
+                    <button
+                        className={`btn-action-both ${runningButton === 'Both' ? 'running' : ''}`}
+                        onClick={() => handleToggle('Both')}
+                        disabled={!canTrade || (formDisabled && runningButton !== 'Both')}
+                    >
+                        {runningButton === 'Both' ? 'Stop' : `Bulk ${pair.left.label} + ${pair.right.label}`}
+                    </button>
+                ) : (
+                    <>
+                        <button 
+                            className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' && !signal?.noTrade ? 'signal-match' : ''}`}
+                            onClick={() => handleToggle('Left')}
+                            disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
+                        >
+                            <span className="icon">{runningButton === 'Left' ? '■' : '⧈'}</span>
+                            {runningButton === 'Left' ? 'Stop' : `Bulk ${pair.left.label}`}
+                        </button>
+                        <button 
+                            className={`btn-action-ai ${runningButton === 'AI' ? 'running' : ''}`}
+                            onClick={() => handleToggle('AI')}
+                            disabled={!canTrade || (formDisabled && runningButton !== 'AI')}
+                        >
+                            {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
+                        </button>
+                        <button 
+                            className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' && !signal?.noTrade ? 'signal-match' : ''}`}
+                            onClick={() => handleToggle('Right')}
+                            disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
+                        >
+                            <span className="icon">{runningButton === 'Right' ? '■' : '▲'}</span>
+                            {runningButton === 'Right' ? 'Stop' : `Bulk ${pair.right.label}`}
+                        </button>
+                    </>
+                )}
             </div>
 
             {/* Execution Status Footer */}
@@ -592,9 +671,12 @@ const BulkTrader = () => {
                     {runningButton ? (
                         <span>
                             Running <strong>
-                                {runningButton === 'Left' ? pair.left.label : runningButton === 'Right' ? pair.right.label : `AI (${strategy})`}
+                                {runningButton === 'Left' ? pair.left.label
+                                    : runningButton === 'Right' ? pair.right.label
+                                    : runningButton === 'Both' ? `${pair.left.label} + ${pair.right.label}`
+                                    : `AI (${strategy})`}
                                 {lockedPrediction !== null ? ` · Digit ${lockedPrediction}` : ''}
-                            </strong> · {tradesFired}/{bulkCount} trade{bulkCount === 1 ? '' : 's'} fired
+                            </strong> · {tradesFired}/{runningButton === 'Both' ? bulkCount * 2 : bulkCount} trade{bulkCount === 1 && runningButton !== 'Both' ? '' : 's'} fired
                             {(autoFlipEnabled || stopWinEnabled) && ' · sequential (waiting for each result)'}
                         </span>
                     ) : (
