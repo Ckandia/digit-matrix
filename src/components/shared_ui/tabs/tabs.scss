@@ -3,6 +3,8 @@
 .dc-tabs {
     position: relative;
     display: grid;
+    height: 100%;
+    min-height: 0;
 
     &--top {
         grid-template-rows: auto 1fr;
@@ -166,5 +168,15 @@
         &:not(&--header-fit-content) {
             width: var(--tab-width);
         }
+    }
+
+    // Previously unstyled — the active tab's content wrapper defaulted to
+    // height:auto, so it grew to fit whatever content was inside it instead of
+    // respecting the grid's allotted "1fr" row. That's what let tall tab content
+    // (like Bulk Trader once a few extra rows/cards were added) push the whole
+    // page taller than the viewport instead of scrolling within its own space.
+    &__content {
+        min-height: 0;
+        overflow: hidden;
     }
 }
