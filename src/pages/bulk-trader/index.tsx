@@ -34,6 +34,14 @@ const BulkTrader = () => {
     // Cap on how high Auto Flip's loss-recovery stake can climb — required whenever
     // Auto Flip is on, to bound the risk of a losing streak (see runStakeRef below).
     const [maxStake, setMaxStake] = useState<number>(5);
+    // Adaptive Stake: instead of a fixed dollar Max Stake, size the recovery cap
+    // from the account's starting balance (a small risk %) plus any profit already
+    // banked this session — protects the original capital while letting a genuine
+    // profit cushion fund slightly larger recovery attempts. See onContractSettled
+    // in startLoop for the actual formula and an honest note on what this can and
+    // can't guarantee.
+    const [adaptiveStakeEnabled, setAdaptiveStakeEnabled] = useState<boolean>(false);
+    const [riskPercent, setRiskPercent] = useState<number>(5);
     // Digit actually locked in for the currently-running batch — shown in the status
     // pill so it can't drift out of sync with the live Prediction field in the
     // background (see runPredictionRef).
@@ -48,9 +56,8 @@ const BulkTrader = () => {
     const directionRef = useRef<string>('');
     // Running total profit for the current session — checked by Stop Win.
     const cumulativeProfitRef = useRef<number>(0);
-    // Cancels any not-yet-fired trades in the current batch(es) — used by manual
-    // Stop and by Stop Win (which needs to halt remaining trades immediately). An
-    // array because Both Sides mode runs two parallel batches at once.
+    // Cancels any not-yet-fired trades in the current batch — used by manual Stop
+    // and by Stop Win (which needs to halt remaining trades immediately).
     const cancelFnsRef = useRef<Array<() => void>>([]);
     // Auto-clears the "running" UI state once the fixed-size batch has finished
     // firing all its trades (bulkCount total, not repeating forever).
@@ -73,6 +80,15 @@ const BulkTrader = () => {
     // win resets it back to the base stake. Read fresh per-trade (see useBulkTrader),
     // same mechanism as directionRef/runPredictionRef.
     const runStakeRef = useRef<number>(stake);
+    // Account balance snapshotted at the moment this run started — the base for
+    // Adaptive Stake's risk % calculation, so the cap scales with actual account
+    // size rather than being a flat guess.
+    const runStartBalanceRef = useRef<number | undefined>(undefined);
+    // Highest cumulative session profit reached so far this run (a "high water
+    // mark"). Used instead of the current (possibly negative, mid-losing-streak)
+    // cumulative P&L, so a cushion that was genuinely earned earlier in the run
+    // still counts even after a subsequent loss eats into it.
+    const peakProfitRef = useRef<number>(0);
     // Which account (loginid) this run started on — if the user switches accounts
     // mid-run (demo<->real, or between two real accounts), the run is stopped
     // immediately rather than continuing to fire trades under a different account.
@@ -247,6 +263,8 @@ const BulkTrader = () => {
         runPredictionRef.current = predictionRef.current; // lock the digit for this whole run
         runStakeRef.current = stake; // reset to base stake at the start of every run
         runLoginIdRef.current = accountInfo?.loginid; // remember which account this run is for
+        runStartBalanceRef.current = accountInfo?.balance; // base for Adaptive Stake's risk %
+        peakProfitRef.current = 0;
         setLockedPrediction(requiresPrediction ? predictionRef.current : null);
         cumulativeProfitRef.current = 0;
         setLastError(null);
@@ -267,6 +285,7 @@ const BulkTrader = () => {
             // key off the OVERALL running total, not just the single most recent
             // trade's result.
             cumulativeProfitRef.current += settled.profit;
+            peakProfitRef.current = Math.max(peakProfitRef.current, cumulativeProfitRef.current);
 
             // Stop Win: the moment the session is net positive, cancel any remaining
             // not-yet-fired trades immediately — "no more trades once in profit"
@@ -285,7 +304,21 @@ const BulkTrader = () => {
                         directionRef.current === pair.left.contract_type
                             ? pair.right.contract_type
                             : pair.left.contract_type;
-                    runStakeRef.current = Math.min(runStakeRef.current * 2, maxStake);
+
+                    // Adaptive Stake: cap = a small % of the STARTING balance (so the
+                    // cap scales with account size, protecting most of the original
+                    // capital) plus any profit peak already banked this session (using
+                    // that cushion for extra recovery headroom without risking more of
+                    // the original capital). Falls back to the fixed Max Stake field
+                    // when Adaptive Stake is off. Either way, this manages risk — it
+                    // does not guarantee the session ends in profit; a long enough
+                    // losing streak still eventually hits the cap and stays there.
+                    const effectiveCap = adaptiveStakeEnabled
+                        ? (runStartBalanceRef.current ?? maxStake) * (riskPercent / 100) + Math.max(0, peakProfitRef.current)
+                        : maxStake;
+                    const balanceCeiling = accountInfo?.balance ?? Infinity;
+
+                    runStakeRef.current = Math.min(runStakeRef.current * 2, effectiveCap, balanceCeiling);
                 } else {
                     runStakeRef.current = stake;
                 }
@@ -391,7 +424,7 @@ const BulkTrader = () => {
         }, safetyMs);
 
         setRunningButton(button);
-    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo]);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, adaptiveStakeEnabled, riskPercent, pair, strategy, stopLoop, accountInfo]);
 
     // Press once to start, press the same button again to stop early.
     const handleToggle = (button: ActionButton) => {
@@ -603,20 +636,53 @@ const BulkTrader = () => {
                     </div>
 
                     {autoFlipEnabled && (
-                        <div className="form-row">
-                            <div className="form-group">
-                                <label>MAX STAKE (USD)</label>
-                                <input
-                                    type="number"
-                                    step="0.1"
-                                    min={stake}
-                                    value={maxStake}
-                                    disabled={formDisabled}
-                                    onChange={(e) => setMaxStake(Number(e.target.value))}
-                                />
-                                <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
+                        <>
+                            <div className="form-row checkbox-row">
+                                <label className="checkbox-field">
+                                    <input
+                                        type="checkbox"
+                                        checked={adaptiveStakeEnabled}
+                                        disabled={formDisabled}
+                                        onChange={(e) => setAdaptiveStakeEnabled(e.target.checked)}
+                                    />
+                                    <span>
+                                        Adaptive Stake
+                                        <small>Size the recovery cap from your account balance + profit already banked this session, instead of a fixed dollar cap — protects starting capital, doesn't guarantee a profitable session</small>
+                                    </span>
+                                </label>
                             </div>
-                        </div>
+
+                            <div className="form-row">
+                                {adaptiveStakeEnabled ? (
+                                    <div className="form-group">
+                                        <label>RISK % OF BALANCE</label>
+                                        <input
+                                            type="number"
+                                            step="0.5"
+                                            min="1"
+                                            max="50"
+                                            value={riskPercent}
+                                            disabled={formDisabled}
+                                            onChange={(e) => setRiskPercent(Number(e.target.value))}
+                                        />
+                                        <small className="field-hint">Recovery cap = this % of your starting balance, plus any profit already banked this session</small>
+                                    </div>
+                                ) : (
+                                    <div className="form-group">
+                                        <label>MAX STAKE (USD)</label>
+                                        <input
+                                            type="number"
+                                            step="0.1"
+                                            min={stake}
+                                            value={maxStake}
+                                            disabled={formDisabled}
+                                            onChange={(e) => setMaxStake(Number(e.target.value))}
+                                        />
+                                        <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
+                                    </div>
+                                )}
+                            </div>
+                        </>
                     )}
                 </div>
 
