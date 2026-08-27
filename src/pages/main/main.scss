@@ -29,7 +29,7 @@
 
 .main {
     display: flex;
-    overflow: hidden;
+    overflow-y: auto;
     width: 100%;
     height: calc(100vh - 9rem);
     padding: 1.6rem;
