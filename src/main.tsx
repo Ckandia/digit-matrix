@@ -12,6 +12,39 @@ import {
 import { performVersionCheck } from './utils/version-check';
 import './styles/index.scss';
 
+// ── Chunk-load safety net ─────────────────────────────────────────────
+// Catches Rsbuild code-splitting failures (stale hashes after deploy, CDN
+// hiccups, ad-blockers, etc.) and hard-reloads so the browser fetches a
+// fresh index.html with correct asset paths instead of crashing.
+window.addEventListener('error', (event) => {
+    const msg = event.message || '';
+    const isChunkError =
+        msg.includes('Loading CSS chunk') ||
+        msg.includes('Loading chunk') ||
+        msg.includes('Failed to fetch dynamically imported module') ||
+        msg.includes('error loading dynamically imported module');
+
+    if (isChunkError) {
+        console.warn('[Digit Matrix] Chunk load failed — refreshing to latest deployment', event);
+        event.preventDefault();
+        window.location.reload();
+    }
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason?.message || String(event.reason);
+    if (
+        reason.includes('Failed to fetch dynamically imported module') ||
+        reason.includes('Loading CSS chunk') ||
+        reason.includes('Loading chunk')
+    ) {
+        console.warn('[Digit Matrix] Async chunk rejection — refreshing', event.reason);
+        event.preventDefault();
+        window.location.reload();
+    }
+});
+// ───────────────────────────────────────────────────────────────────────
+
 // Configure MobX to handle multiple instances in production builds
 configure({ isolateGlobalState: true });
 
