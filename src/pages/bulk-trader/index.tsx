@@ -8,8 +8,6 @@ import './bulk-trader.scss';
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
 const SIGNAL_CYCLE_SECONDS = 20;
 const ENTER_NOW_DISPLAY_MS = 3000;
-// Wait for at least this many ticks before showing a first signal, so the very
-// first reading isn't based on just 1-2 ticks of noise.
 const MIN_TICKS_FOR_SIGNAL = 20;
 
 const BulkTrader = () => {
@@ -21,89 +19,34 @@ const BulkTrader = () => {
     const [prediction, setPrediction] = useState<number>(1);
     const [executionMode, setExecutionMode] = useState<TradeExecutionMode>('FAST');
 
-    // Which of the three action buttons (if any) is currently running.
     const [runningButton, setRunningButton] = useState<ActionButton | null>(null);
     const [lastError, setLastError] = useState<string | null>(null);
     const [tradesFired, setTradesFired] = useState<number>(0);
     const [autoFlipEnabled, setAutoFlipEnabled] = useState<boolean>(false);
     const [stopWinEnabled, setStopWinEnabled] = useState<boolean>(false);
-    // Fires trades on BOTH sides of the current pair at once each round (e.g. Even
-    // AND Odd, Rise AND Fall). Mutually exclusive with Auto Flip — there's no
-    // "opposite side" to flip to when both are already being traded every round.
     const [bothSidesEnabled, setBothSidesEnabled] = useState<boolean>(false);
-    // Cap on how high Auto Flip's loss-recovery stake can climb — required whenever
-    // Auto Flip is on, to bound the risk of a losing streak (see runStakeRef below).
     const [maxStake, setMaxStake] = useState<number>(5);
-    // Adaptive Stake: instead of a fixed dollar Max Stake, size the recovery cap
-    // from the account's starting balance (a small risk %) plus any profit already
-    // banked this session — protects the original capital while letting a genuine
-    // profit cushion fund slightly larger recovery attempts. See onContractSettled
-    // in startLoop for the actual formula and an honest note on what this can and
-    // can't guarantee.
     const [adaptiveStakeEnabled, setAdaptiveStakeEnabled] = useState<boolean>(false);
     const [riskPercent, setRiskPercent] = useState<number>(5);
-    // Digit actually locked in for the currently-running batch — shown in the status
-    // pill so it can't drift out of sync with the live Prediction field in the
-    // background (see runPredictionRef).
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
-    // Which contract_type the running batch is currently firing. Starts at whichever
-    // side/strategy was chosen; Auto Flip switches it to the opposite side after a
-    // loss. Read fresh before each individual trade (see useBulkTrader), so a flip
-    // takes effect on the very next trade, not just on the next separate run.
     const directionRef = useRef<string>('');
-    // Running total profit for the current session — checked by Stop Win.
     const cumulativeProfitRef = useRef<number>(0);
-    // Cancels any not-yet-fired trades in the current batch — used by manual Stop
-    // and by Stop Win (which needs to halt remaining trades immediately).
     const cancelFnsRef = useRef<Array<() => void>>([]);
-    // Auto-clears the "running" UI state once the fixed-size batch has finished
-    // firing all its trades (bulkCount total, not repeating forever).
     const completionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    // Lets the signal cycle read the current Prediction value fresh without
-    // restarting on every change (see the signal effect below).
     const predictionRef = useRef<number>(prediction);
-    // Snapshot of the digit for the CURRENT run only — captured once when a button
-    // is pressed and held fixed for every trade in that batch. This is deliberately
-    // separate from predictionRef/the live signal: all bulkCount trades in one run
-    // should target the same digit (e.g. "10 trades at digit 8" means all 10 use
-    // barrier 8), even if the signal ticks over to a different digit mid-run. Only
-    // the side (Match/Differ, Over/Under, etc.) is allowed to change mid-run, via
-    // Auto Flip — the digit itself never should.
     const runPredictionRef = useRef<number>(prediction);
-    // Current stake for the running batch. Starts at the base Stake field each run;
-    // when Auto Flip is on, a loss doubles it (classic martingale recovery — a win
-    // after N losses at doubling stakes recovers the prior losses plus the original
-    // target), capped at maxStake so a losing streak can't compound indefinitely. A
-    // win resets it back to the base stake. Read fresh per-trade (see useBulkTrader),
-    // same mechanism as directionRef/runPredictionRef.
     const runStakeRef = useRef<number>(stake);
-    // Account balance snapshotted at the moment this run started — the base for
-    // Adaptive Stake's risk % calculation, so the cap scales with actual account
-    // size rather than being a flat guess.
     const runStartBalanceRef = useRef<number | undefined>(undefined);
-    // Highest cumulative session profit reached so far this run (a "high water
-    // mark"). Used instead of the current (possibly negative, mid-losing-streak)
-    // cumulative P&L, so a cushion that was genuinely earned earlier in the run
-    // still counts even after a subsequent loss eats into it.
     const peakProfitRef = useRef<number>(0);
-    // Which account (loginid) this run started on — if the user switches accounts
-    // mid-run (demo<->real, or between two real accounts), the run is stopped
-    // immediately rather than continuing to fire trades under a different account.
     const runLoginIdRef = useRef<string | undefined>(undefined);
 
-    // Signal indicator: recommends a side (or digit) and cycles on a countdown so
-    // the user has a consistent, structured moment to act rather than reacting to
-    // every tick. tickSequenceRef lets the interval read the latest ticks without
-    // needing to restart every time a new tick arrives.
     const [signal, setSignal] = useState<TradeSignal | null>(null);
     const [signalCountdown, setSignalCountdown] = useState<number>(SIGNAL_CYCLE_SECONDS);
     const [isEnterNow, setIsEnterNow] = useState<boolean>(false);
     const tickSequenceRef = useRef<TickData[]>([]);
-    // Keeps the signal refreshing every 500ms during the "ENTER NOW" flash — see
-    // the timing fix below for why.
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     useEffect(() => {
@@ -120,9 +63,6 @@ const BulkTrader = () => {
         predictionRef.current = prediction;
     }, [prediction]);
 
-    // Applies a new signal and, for digit-based strategies, auto-fills Prediction
-    // with the recommended digit — digit markets move fast enough that requiring a
-    // manual "apply" click risked missing the entry window.
     const applySignal = useCallback((newSignal: TradeSignal | null) => {
         setSignal(newSignal);
         if (newSignal?.digit !== undefined) {
@@ -130,23 +70,6 @@ const BulkTrader = () => {
         }
     }, []);
 
-    // Signal cycle: wait for enough tick data, lock in a signal, count down, flash
-    // "ENTER NOW" at zero, then compute a fresh signal for the next cycle. Restarts
-    // when strategy, market, or duration changes (duration changes what window the
-    // price-direction contracts are checked over — see signal.ts). Deliberately does
-    // NOT depend on `prediction` (reads it via predictionRef instead) — since
-    // applySignal can itself update prediction, depending on it here would restart
-    // this effect every cycle.
-    //
-    // TIMING FIX: the signal shown during "ENTER NOW" is now recomputed at the exact
-    // moment the flash starts, not 20 seconds earlier. Previously the signal was
-    // locked in at the start of the countdown and held frozen for the full 20s while
-    // fresh ticks kept arriving in the background — so by the time "ENTER NOW"
-    // appeared, the recommendation could already be based on up to 20 stale ticks
-    // (a lot, on a 1-second-tick market). That's what caused entries to feel early or
-    // late. It's also refreshed every 500ms for the duration of the flash itself, so
-    // whenever within that window you actually click, it's based on very recent data
-    // rather than a single snapshot from the instant the flash began.
     useEffect(() => {
         setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
@@ -165,12 +88,10 @@ const BulkTrader = () => {
         const interval = setInterval(() => {
             if (!hasSignal) {
                 hasSignal = tryComputeInitial();
-                return; // still gathering data — don't start counting down yet
+                return;
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
-                    // Compute fresh RIGHT NOW, at the moment the flash begins — this is
-                    // the data the user will actually act on.
                     applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                     setIsEnterNow(true);
 
@@ -204,26 +125,14 @@ const BulkTrader = () => {
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
 
-    // A few contract types require a different tick-duration range than the default
-    // 1-10 — e.g. Only Ups/Only Downs (RUNHIGH/RUNLOW) require 2-5 ticks specifically
-    // on Deriv's platform. Trading outside the range gets silently rejected, so the
-    // input's min/max follow this, and the value is clamped into range on switch.
     const durationConstraint = DURATION_CONSTRAINTS[strategy] ?? DEFAULT_DURATION_CONSTRAINT;
 
     useEffect(() => {
         setDuration((prev) => Math.min(Math.max(prev, durationConstraint.min), durationConstraint.max));
     }, [durationConstraint.min, durationConstraint.max]);
 
-    // Even/Odd only cares about parity, so E/O is the clearer view. Every other
-    // strategy (Matches, Differs, Over/Under, and the non-digit ones) is about the
-    // specific digit, so show the real 0-9 value instead — matches how the digit
-    // heatmap above it already breaks things down per-digit.
     const digitDisplayMode: 'even_odd' | 'digit' = ['Even', 'Odd'].includes(strategy) ? 'even_odd' : 'digit';
 
-    // The two main action buttons take their label + contract_type from whichever
-    // strategy is selected in the dropdown — e.g. "Over" shows "Bulk Over" / "Bulk
-    // Under" instead of always showing "Bulk Even" / "Bulk Odd". Also gives Auto
-    // Flip the "opposite side" to switch to after a loss.
     const pair = useMemo(
         () => STRATEGY_PAIR_MAPPING[strategy] ?? {
             left: { label: strategy, contract_type: STRATEGY_MAPPING[strategy] },
@@ -232,13 +141,8 @@ const BulkTrader = () => {
         [strategy]
     );
 
-    // Trading is only enabled once the shared Deriv connection is both open AND
-    // authorized against the logged-in account (not just socket-open).
     const canTrade = isConnected && isAuthorized;
 
-    // Stops the current run: cancels any not-yet-fired trades in the batch(es),
-    // clears the auto-completion timer, and resets the UI to idle. Used for manual
-    // Stop, Stop Win, and cleanup on unmount/disconnect.
     const stopLoop = useCallback(() => {
         cancelFnsRef.current.forEach((fn) => fn());
         cancelFnsRef.current = [];
@@ -251,8 +155,6 @@ const BulkTrader = () => {
     }, []);
 
     const startLoop = useCallback((button: ActionButton) => {
-        // Only one run can be active at a time — starting a new one cancels
-        // whichever batch(es) were previously running.
         cancelFnsRef.current.forEach((fn) => fn());
         cancelFnsRef.current = [];
         if (completionTimeoutRef.current) {
@@ -260,10 +162,10 @@ const BulkTrader = () => {
             completionTimeoutRef.current = null;
         }
 
-        runPredictionRef.current = predictionRef.current; // lock the digit for this whole run
-        runStakeRef.current = stake; // reset to base stake at the start of every run
-        runLoginIdRef.current = accountInfo?.loginid; // remember which account this run is for
-        runStartBalanceRef.current = accountInfo?.balance; // base for Adaptive Stake's risk %
+        runPredictionRef.current = predictionRef.current;
+        runStakeRef.current = stake;
+        runLoginIdRef.current = accountInfo?.loginid;
+        runStartBalanceRef.current = accountInfo?.balance;
         peakProfitRef.current = 0;
         setLockedPrediction(requiresPrediction ? predictionRef.current : null);
         cumulativeProfitRef.current = 0;
@@ -281,23 +183,14 @@ const BulkTrader = () => {
         };
 
         const onContractSettled = (settled: { contract_type: string; profit: number; won: boolean }) => {
-            // Always track cumulative session P&L — both Stop Win and Auto Flip now
-            // key off the OVERALL running total, not just the single most recent
-            // trade's result.
             cumulativeProfitRef.current += settled.profit;
             peakProfitRef.current = Math.max(peakProfitRef.current, cumulativeProfitRef.current);
 
-            // Stop Win: the moment the session is net positive, cancel any remaining
-            // not-yet-fired trades immediately — "no more trades once in profit"
-            // rather than letting the rest of the batch fire first.
             if (stopWinEnabled && cumulativeProfitRef.current > 0) {
                 stopLoop();
                 return;
             }
 
-            // Auto Flip now triggers off the OVERALL session P&L, not "did the last
-            // single trade lose" — e.g. if you're up overall, a single loss won't
-            // flip anything; it only flips while the session as a whole is behind.
             if (autoFlipEnabled) {
                 if (cumulativeProfitRef.current < 0) {
                     directionRef.current =
@@ -305,14 +198,6 @@ const BulkTrader = () => {
                             ? pair.right.contract_type
                             : pair.left.contract_type;
 
-                    // Adaptive Stake: cap = a small % of the STARTING balance (so the
-                    // cap scales with account size, protecting most of the original
-                    // capital) plus any profit peak already banked this session (using
-                    // that cushion for extra recovery headroom without risking more of
-                    // the original capital). Falls back to the fixed Max Stake field
-                    // when Adaptive Stake is off. Either way, this manages risk — it
-                    // does not guarantee the session ends in profit; a long enough
-                    // losing streak still eventually hits the cap and stays there.
                     const effectiveCap = adaptiveStakeEnabled
                         ? (runStartBalanceRef.current ?? maxStake) * (riskPercent / 100) + Math.max(0, peakProfitRef.current)
                         : maxStake;
@@ -340,11 +225,7 @@ const BulkTrader = () => {
         };
 
         if (button === 'Both') {
-            // Buys both sides of the pair every round (e.g. Even AND Odd at once).
-            // Auto Flip is disabled in this mode (mutually exclusive in the UI —
-            // there's no "opposite side" to flip to when both are already being
-            // traded), so each side just fires at the fixed base stake/contract_type.
-            directionRef.current = pair.left.contract_type; // reference only, not used for flipping here
+            directionRef.current = pair.left.contract_type;
             const cancelLeft = executeBulkTrades(
                 executionMode,
                 bulkCount,
@@ -382,11 +263,6 @@ const BulkTrader = () => {
 
             directionRef.current = initialType;
 
-            // getDynamicParams is called fresh by useBulkTrader immediately before
-            // each individual trade fires. contract_type and amount can change
-            // trade-to-trade (Auto Flip / loss-recovery); prediction reads the fixed
-            // run-start snapshot — the digit stays the same for every trade in this
-            // batch.
             const getDynamicParams = () => ({
                 contract_type: directionRef.current,
                 prediction: requiresPrediction ? runPredictionRef.current : undefined,
@@ -395,7 +271,7 @@ const BulkTrader = () => {
 
             const cancel = executeBulkTrades(
                 executionMode,
-                bulkCount, // TOTAL trades for this run — fires exactly this many, then stops.
+                bulkCount,
                 { symbol: MARKET_MAPPING[market], duration },
                 getDynamicParams,
                 onTradeResult,
@@ -406,15 +282,8 @@ const BulkTrader = () => {
             cancelFnsRef.current = [cancel];
         }
 
-        // Safety-net only: if something goes wrong (e.g. a proposal_open_contract
-        // subscription never resolves after a network hiccup) and the batch-complete
-        // callback above never fires, this guarantees the UI doesn't stay stuck on
-        // "running" forever. Generous on purpose — sequential runs can legitimately
-        // take a while (each trade waits for its own settlement). Both-side batches
-        // run in parallel (not doubled end-to-end), so the timing math is the same
-        // regardless of whether one or two batches are active.
         const delayPerTrade = executionMode === 'FAST' ? 50 : 300;
-        const sequentialSafetyMs = bulkCount * 15000; // ~15s per trade, generous ceiling
+        const sequentialSafetyMs = bulkCount * 15000;
         const burstSafetyMs = bulkCount * delayPerTrade + 2000;
         const safetyMs = sequential ? sequentialSafetyMs : burstSafetyMs;
         completionTimeoutRef.current = setTimeout(() => {
@@ -426,7 +295,6 @@ const BulkTrader = () => {
         setRunningButton(button);
     }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, adaptiveStakeEnabled, riskPercent, pair, strategy, stopLoop, accountInfo]);
 
-    // Press once to start, press the same button again to stop early.
     const handleToggle = (button: ActionButton) => {
         if (!canTrade) return;
         if (runningButton === button) {
@@ -436,8 +304,6 @@ const BulkTrader = () => {
         }
     };
 
-    // Clean up the running batch on unmount so it doesn't keep firing trades
-    // after the user navigates away from the tab.
     useEffect(() => {
         return () => {
             cancelFnsRef.current.forEach((fn) => fn());
@@ -445,9 +311,6 @@ const BulkTrader = () => {
         };
     }, []);
 
-    // Auto-stop if the connection to the account drops, OR if the active account
-    // changes, while a run is active — prevents a batch that was started for one
-    // account from continuing to fire trades after the user switches accounts.
     useEffect(() => {
         if (!runningButton) return;
         if (!canTrade || accountInfo?.loginid !== runLoginIdRef.current) {
@@ -459,7 +322,6 @@ const BulkTrader = () => {
 
     return (
         <div className="bulk-trader-wrapper">
-            {/* Account Connection Status */}
             <div className={`connection-banner ${canTrade ? 'connected' : 'disconnected'}`}>
                 <span className="dot" />
                 {canTrade ? (
@@ -476,9 +338,6 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {/* Signal Indicator — shows the recent split plainly; only highlights a
-                side when it's meaningfully lopsided (not a confidence score, just a
-                display threshold — see signal.ts for why no score is computed) */}
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
                     <div className="signal-info">
@@ -514,7 +373,6 @@ const BulkTrader = () => {
             )}
 
             <div className="top-grid">
-                {/* Controls Card */}
                 <div className="control-card">
                     <div className="form-row">
                         <div className="form-group">
@@ -587,6 +445,7 @@ const BulkTrader = () => {
                         </div>
                     </div>
 
+                    {/* Row 1: Auto Flip | Stop Win */}
                     <div className="form-row checkbox-row">
                         <label className="checkbox-field">
                             <input
@@ -600,7 +459,10 @@ const BulkTrader = () => {
                             />
                             <span>
                                 Auto Flip
-                                <small>Switch to {pair.right.label}/{pair.left.label} and double the stake while the overall session is in loss</small>
+                                <i
+                                    className="info-icon"
+                                    data-tooltip={`Switch to ${pair.right.label}/${pair.left.label} and double the stake while the overall session is in loss`}
+                                >i</i>
                             </span>
                         </label>
                         <label className="checkbox-field">
@@ -612,11 +474,15 @@ const BulkTrader = () => {
                             />
                             <span>
                                 Stop Win
-                                <small>Auto-stop once the session is in profit</small>
+                                <i
+                                    className="info-icon"
+                                    data-tooltip="Auto-stop once the session is in profit"
+                                >i</i>
                             </span>
                         </label>
                     </div>
 
+                    {/* Row 2: Both Sides | Adaptive Stake (when Auto Flip is on) */}
                     <div className="form-row checkbox-row">
                         <label className="checkbox-field">
                             <input
@@ -630,69 +496,71 @@ const BulkTrader = () => {
                             />
                             <span>
                                 Both Sides
-                                <small>Buy {pair.left.label} and {pair.right.label} at the same time every round — with sub-100% payouts this guarantees a net loss over many rounds (house edge on both sides), not a hedge</small>
+                                <i
+                                    className="info-icon"
+                                    data-tooltip={`Buy ${pair.left.label} and ${pair.right.label} at the same time every round — with sub-100% payouts this guarantees a net loss over many rounds (house edge on both sides), not a hedge`}
+                                >i</i>
                             </span>
                         </label>
+                        {autoFlipEnabled && (
+                            <label className="checkbox-field">
+                                <input
+                                    type="checkbox"
+                                    checked={adaptiveStakeEnabled}
+                                    disabled={formDisabled}
+                                    onChange={(e) => setAdaptiveStakeEnabled(e.target.checked)}
+                                />
+                                <span>
+                                    Adaptive Stake
+                                    <i
+                                        className="info-icon"
+                                        data-tooltip="Size the recovery cap from your account balance + profit already banked this session, instead of a fixed dollar cap — protects starting capital, doesn't guarantee a profitable session"
+                                    >i</i>
+                                </span>
+                            </label>
+                        )}
                     </div>
 
+                    {/* Risk % / Max Stake inputs — shown only when Auto Flip is on */}
                     {autoFlipEnabled && (
-                        <>
-                            <div className="form-row checkbox-row">
-                                <label className="checkbox-field">
+                        <div className="form-row">
+                            {adaptiveStakeEnabled ? (
+                                <div className="form-group">
+                                    <label>RISK % OF BALANCE</label>
                                     <input
-                                        type="checkbox"
-                                        checked={adaptiveStakeEnabled}
+                                        type="number"
+                                        step="0.5"
+                                        min="1"
+                                        max="50"
+                                        value={riskPercent}
                                         disabled={formDisabled}
-                                        onChange={(e) => setAdaptiveStakeEnabled(e.target.checked)}
+                                        onChange={(e) => setRiskPercent(Number(e.target.value))}
                                     />
-                                    <span>
-                                        Adaptive Stake
-                                        <small>Size the recovery cap from your account balance + profit already banked this session, instead of a fixed dollar cap — protects starting capital, doesn't guarantee a profitable session</small>
-                                    </span>
-                                </label>
-                            </div>
-
-                            <div className="form-row">
-                                {adaptiveStakeEnabled ? (
-                                    <div className="form-group">
-                                        <label>RISK % OF BALANCE</label>
-                                        <input
-                                            type="number"
-                                            step="0.5"
-                                            min="1"
-                                            max="50"
-                                            value={riskPercent}
-                                            disabled={formDisabled}
-                                            onChange={(e) => setRiskPercent(Number(e.target.value))}
-                                        />
-                                        <small className="field-hint">Recovery cap = this % of your starting balance, plus any profit already banked this session</small>
-                                    </div>
-                                ) : (
-                                    <div className="form-group">
-                                        <label>MAX STAKE (USD)</label>
-                                        <input
-                                            type="number"
-                                            step="0.1"
-                                            min={stake}
-                                            value={maxStake}
-                                            disabled={formDisabled}
-                                            onChange={(e) => setMaxStake(Number(e.target.value))}
-                                        />
-                                        <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
-                                    </div>
-                                )}
-                            </div>
-                        </>
+                                    <small className="field-hint">Recovery cap = this % of your starting balance, plus any profit already banked this session</small>
+                                </div>
+                            ) : (
+                                <div className="form-group">
+                                    <label>MAX STAKE (USD)</label>
+                                    <input
+                                        type="number"
+                                        step="0.1"
+                                        min={stake}
+                                        value={maxStake}
+                                        disabled={formDisabled}
+                                        onChange={(e) => setMaxStake(Number(e.target.value))}
+                                    />
+                                    <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
 
-                {/* Digit Visualizer Display */}
                 <div className="visualizer-card">
                     <DigitDisplay ticks={tickSequence} mode={digitDisplayMode} />
                 </div>
             </div>
 
-            {/* Bulk Action Controls — press once to start, press again to stop */}
             <div className="action-pad-card">
                 {bothSidesEnabled ? (
                     <button
@@ -731,7 +599,6 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {/* Execution Status Footer */}
             <div className="footer-control-bar">
                 <div className="status-pill">
                     {runningButton ? (
