@@ -6,6 +6,61 @@
   box-sizing: border-box;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 
+  /* ── Info icon + tooltip ───────────────────────────────────────────── */
+  .info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #475569;
+    color: #fff;
+    font-size: 10px;
+    font-style: normal;
+    font-weight: 700;
+    margin-left: 6px;
+    cursor: help;
+    flex-shrink: 0;
+    position: relative;
+    font-family: serif;
+    line-height: 1;
+
+    &:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: 240px;
+      padding: 8px 12px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.4;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      z-index: 100;
+      pointer-events: none;
+      white-space: normal;
+      text-align: left;
+    }
+
+    &:hover::before {
+      content: '';
+      position: absolute;
+      bottom: calc(100% + 2px);
+      left: 50%;
+      transform: translateX(-50%);
+      border-width: 6px;
+      border-style: solid;
+      border-color: #334155 transparent transparent transparent;
+      z-index: 100;
+    }
+  }
+  /* ─────────────────────────────────────────────────────────────────── */
+
   /* Account Connection Banner */
   .connection-banner {
     display: flex;
@@ -244,18 +299,12 @@
 
       span {
         display: flex;
-        flex-direction: column;
-        gap: 2px;
+        flex-direction: row;
+        align-items: center;
+        gap: 4px;
         font-size: 13px;
         font-weight: 700;
         color: #ffffff;
-      }
-
-      small {
-        font-size: 10px;
-        font-weight: 500;
-        color: #94a3b8;
-        line-height: 1.3;
       }
 
       &:has(input:disabled) {
@@ -350,8 +399,6 @@
         &.O { color: #ef4444; }
       }
 
-      /* Digit-value cells (shown for Matches/Differs/Over/Under) — colors mirror
-         the heatmap circles above so a digit reads the same way in both views. */
       .seq-digit {
         &.seq-digit-0 { color: #ef4444; }
         &.seq-digit-1 { color: #22c55e; }
@@ -629,8 +676,6 @@
     }
   }
 
-  // Stack the control card above the visualizer instead of side-by-side —
-  // there's no room for a fixed 340px column on a phone screen.
   .top-grid {
     grid-template-columns: 1fr;
     gap: 10px;
@@ -648,9 +693,6 @@
     padding: 10px;
   }
 
-  // 10 fixed-size circles side by side don't fit a phone width — shrink them
-  // and let the row scroll horizontally as a safe fallback rather than
-  // squeezing them asymmetrically.
   .digit-heatmap-container {
     padding: 8px 10px;
     overflow-x: auto;
@@ -673,8 +715,6 @@
     }
   }
 
-  // 13 columns is far too many for a phone-width grid — drop to 7 so each
-  // cell stays legible instead of shrinking to near-nothing.
   .sequence-grid-wrapper {
     padding: 10px;
     min-height: auto;
@@ -689,9 +729,6 @@
     }
   }
 
-  // Let the buttons wrap naturally instead of forcing a fixed row width that
-  // doesn't fit — the two rectangular buttons shrink/wrap first, the round
-  // AI button keeps its shape.
   .action-pad-card {
     flex-wrap: wrap;
     gap: 10px;
@@ -731,8 +768,19 @@
   }
 
   .checkbox-field {
-    small {
-      font-size: 9px;
+    span {
+      font-size: 12px;
+    }
+  }
+
+  .info-icon {
+    width: 14px;
+    height: 14px;
+    font-size: 9px;
+
+    &:hover::after {
+      width: 180px;
+      font-size: 10px;
     }
   }
 }
