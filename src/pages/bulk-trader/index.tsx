@@ -3,7 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
-import { fetchAnalysis, logTradeToBackend, sendTickToBackend } from './api';
+import { fetchAnalysis, fetchRecentTicks, logTradeToBackend, sendTickToBackend } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
@@ -31,9 +31,9 @@ const BulkTrader = () => {
     const [riskPercent, setRiskPercent] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
-    // Backend 1000-tick analysis
+    // Backend unified data
     const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
-    const [backendStatus, setBackendStatus] = useState<string>('Collecting 1000 ticks for analysis...');
+    const [backendStatus, setBackendStatus] = useState<string>('Waiting for backend data...');
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
@@ -54,23 +54,42 @@ const BulkTrader = () => {
     const tickSequenceRef = useRef<TickData[]>([]);
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+    // Backend tick cache for signal computation (ref so it doesn't reset timers)
+    const backendTicksRef = useRef<any[]>([]);
+
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
 
-    // Send ticks to backend for 1000-tick analysis
+    // Send every local tick to backend so database grows
     useEffect(() => {
         if (tickSequence.length === 0) return;
         const latest = tickSequence[tickSequence.length - 1];
         if (latest && latest.quote && latest.symbol) {
             sendTickToBackend(latest.symbol, latest.quote);
-            setBackendStatus(`Sent ${tickSequence.length} ticks · Need 1000 for full analysis`);
         }
     }, [tickSequence]);
 
-    // Fetch 1000-tick analysis from backend every 5 seconds
+    // Pull last 20 ticks from backend every 2 seconds (signal source of truth)
+    useEffect(() => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) return;
+
+        const load = async () => {
+            const ticks = await fetchRecentTicks(symbol, 20);
+            if (ticks) {
+                backendTicksRef.current = ticks;
+            }
+        };
+
+        load();
+        const interval = setInterval(load, 2000);
+        return () => clearInterval(interval);
+    }, [market]);
+
+    // Pull 1000-tick analysis every 5 seconds
     useEffect(() => {
         const symbol = MARKET_MAPPING[market];
         if (!symbol) return;
@@ -79,9 +98,9 @@ const BulkTrader = () => {
             const data = await fetchAnalysis(symbol);
             if (data) {
                 setBackendAnalysis(data);
-                setBackendStatus(`1000-tick analysis ready · ${data.lookback} ticks loaded`);
+                setBackendStatus(`${data.lookback} ticks loaded`);
             } else {
-                setBackendStatus('Collecting ticks... (wait 60-90s for 1000 ticks)');
+                setBackendStatus('Collecting...');
             }
         };
 
@@ -105,6 +124,7 @@ const BulkTrader = () => {
         }
     }, []);
 
+    // SIGNAL: uses backend ticks (same data as analysis)
     useEffect(() => {
         setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
@@ -112,8 +132,14 @@ const BulkTrader = () => {
 
         let hasSignal = false;
         const tryComputeInitial = () => {
-            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+            if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                const tickData = backendTicksRef.current.map((t: any) => ({
+                    quote: t.quote,
+                    digit: t.digit,
+                    symbol: MARKET_MAPPING[market],
+                    epoch: Date.now() / 1000
+                }));
+                applySignal(computeSignal(strategy, tickData, predictionRef.current, duration));
                 return true;
             }
             return false;
@@ -127,12 +153,28 @@ const BulkTrader = () => {
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
-                    applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                    if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                        const tickData = backendTicksRef.current.map((t: any) => ({
+                            quote: t.quote,
+                            digit: t.digit,
+                            symbol: MARKET_MAPPING[market],
+                            epoch: Date.now() / 1000
+                        }));
+                        applySignal(computeSignal(strategy, tickData, predictionRef.current, duration));
+                    }
                     setIsEnterNow(true);
 
                     if (enterNowRefreshRef.current) clearInterval(enterNowRefreshRef.current);
                     enterNowRefreshRef.current = setInterval(() => {
-                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                        if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                            const tickData = backendTicksRef.current.map((t: any) => ({
+                                quote: t.quote,
+                                digit: t.digit,
+                                symbol: MARKET_MAPPING[market],
+                                epoch: Date.now() / 1000
+                            }));
+                            applySignal(computeSignal(strategy, tickData, predictionRef.current, duration));
+                        }
                     }, 500);
 
                     setTimeout(() => {
@@ -384,7 +426,7 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {/* 1000-Tick Backend Analysis Card */}
+            {/* 1000-Tick Backend Analysis */}
             {backendAnalysis ? (
                 <div className="signal-card" style={{ borderColor: '#a855f7' }}>
                     <div className="signal-info">
@@ -412,10 +454,11 @@ const BulkTrader = () => {
                 </div>
             )}
 
+            {/* Signal — now powered by backend ticks */}
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
                     <div className="signal-info">
-                        <span className="signal-label">SIGNAL (20-TICK FAST)</span>
+                        <span className="signal-label">SIGNAL (BACKEND 20-TICK)</span>
                         <span className="signal-value">
                             {signal.noTrade
                                 ? 'NO TRADE — too close to call'
@@ -438,10 +481,10 @@ const BulkTrader = () => {
                 <div className="signal-card analyzing">
                     <div className="signal-info">
                         <span className="signal-label">SIGNAL</span>
-                        <span className="signal-value">Analyzing market…</span>
+                        <span className="signal-value">Waiting for backend ticks...</span>
                     </div>
                     <div className="signal-countdown">
-                        <span>Gathering {MIN_TICKS_FOR_SIGNAL} ticks before first signal</span>
+                        <span>Backend collecting {MIN_TICKS_FOR_SIGNAL} ticks</span>
                     </div>
                 </div>
             )}
@@ -464,248 +507,4 @@ const BulkTrader = () => {
                                     <option key={s} value={s}>{s}</option>
                                 ))}
                             </select>
-                        </div>
-                    </div>
-
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>STAKE (USD)</label>
-                            <input 
-                                type="number" 
-                                step="0.1" 
-                                min="0.35" 
-                                value={stake} 
-                                disabled={formDisabled}
-                                onChange={(e) => setStake(Number(e.target.value))} 
-                            />
-                        </div>
-                        {requiresPrediction && (
-                            <div className="form-group">
-                                <label>PREDICTION</label>
-                                <input 
-                                    type="number" 
-                                    min="0" 
-                                    max="9" 
-                                    value={prediction} 
-                                    disabled={formDisabled}
-                                    onChange={(e) => setPrediction(Number(e.target.value))} 
-                                />
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>DURATION (TICKS)</label>
-                            <input 
-                                type="number" 
-                                min={durationConstraint.min} 
-                                max={durationConstraint.max} 
-                                value={duration} 
-                                disabled={formDisabled}
-                                onChange={(e) => setDuration(Number(e.target.value))} 
-                            />
-                        </div>
-                        <div className="form-group">
-                            <label>NO. OF BULK TRADES</label>
-                            <input 
-                                type="number" 
-                                min="1" 
-                                max="50" 
-                                value={bulkCount} 
-                                disabled={formDisabled}
-                                onChange={(e) => setBulkCount(Number(e.target.value))} 
-                            />
-                        </div>
-                    </div>
-
-                    {/* Row 1: Auto Flip | Stop Win */}
-                    <div className="form-row checkbox-row">
-                        <label className="checkbox-field">
-                            <input
-                                type="checkbox"
-                                checked={autoFlipEnabled}
-                                disabled={formDisabled || bothSidesEnabled}
-                                onChange={(e) => {
-                                    setAutoFlipEnabled(e.target.checked);
-                                    if (e.target.checked) setBothSidesEnabled(false);
-                                }}
-                            />
-                            <span>
-                                Auto Flip
-                                <i
-                                    className="info-icon"
-                                    data-tooltip={`Switch to ${pair.right.label}/${pair.left.label} and double the stake while the overall session is in loss`}
-                                >i</i>
-                            </span>
-                        </label>
-                        <label className="checkbox-field">
-                            <input
-                                type="checkbox"
-                                checked={stopWinEnabled}
-                                disabled={formDisabled}
-                                onChange={(e) => setStopWinEnabled(e.target.checked)}
-                            />
-                            <span>
-                                Stop Win
-                                <i
-                                    className="info-icon"
-                                    data-tooltip="Auto-stop once the session is in profit"
-                                >i</i>
-                            </span>
-                        </label>
-                    </div>
-
-                    {/* Row 2: Both Sides | Adaptive Stake (when Auto Flip is on) */}
-                    <div className="form-row checkbox-row">
-                        <label className="checkbox-field">
-                            <input
-                                type="checkbox"
-                                checked={bothSidesEnabled}
-                                disabled={formDisabled || autoFlipEnabled}
-                                onChange={(e) => {
-                                    setBothSidesEnabled(e.target.checked);
-                                    if (e.target.checked) setAutoFlipEnabled(false);
-                                }}
-                            />
-                            <span>
-                                Both Sides
-                                <i
-                                    className="info-icon"
-                                    data-tooltip={`Buy ${pair.left.label} and ${pair.right.label} at the same time every round — with sub-100% payouts this guarantees a net loss over many rounds (house edge on both sides), not a hedge`}
-                                >i</i>
-                            </span>
-                        </label>
-                        {autoFlipEnabled && (
-                            <label className="checkbox-field">
-                                <input
-                                    type="checkbox"
-                                    checked={adaptiveStakeEnabled}
-                                    disabled={formDisabled}
-                                    onChange={(e) => setAdaptiveStakeEnabled(e.target.checked)}
-                                />
-                                <span>
-                                    Adaptive Stake
-                                    <i
-                                        className="info-icon"
-                                        data-tooltip="Size the recovery cap from your account balance + profit already banked this session, instead of a fixed dollar cap — protects starting capital, doesn't guarantee a profitable session"
-                                    >i</i>
-                                </span>
-                            </label>
-                        )}
-                    </div>
-
-                    {/* Risk % / Max Stake inputs — shown only when Auto Flip is on */}
-                    {autoFlipEnabled && (
-                        <div className="form-row">
-                            {adaptiveStakeEnabled ? (
-                                <div className="form-group">
-                                    <label>RISK % OF BALANCE</label>
-                                    <input
-                                        type="number"
-                                        step="0.5"
-                                        min="1"
-                                        max="50"
-                                        value={riskPercent}
-                                        disabled={formDisabled}
-                                        onChange={(e) => setRiskPercent(Number(e.target.value))}
-                                    />
-                                    <small className="field-hint">Recovery cap = this % of your starting balance, plus any profit already banked this session</small>
-                                </div>
-                            ) : (
-                                <div className="form-group">
-                                    <label>MAX STAKE (USD)</label>
-                                    <input
-                                        type="number"
-                                        step="0.1"
-                                        min={stake}
-                                        value={maxStake}
-                                        disabled={formDisabled}
-                                        onChange={(e) => setMaxStake(Number(e.target.value))}
-                                    />
-                                    <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
-
-                <div className="visualizer-card">
-                    <DigitDisplay ticks={tickSequence} mode={digitDisplayMode} />
-                </div>
-            </div>
-
-            <div className="action-pad-card">
-                {bothSidesEnabled ? (
-                    <button
-                        className={`btn-action-both ${runningButton === 'Both' ? 'running' : ''}`}
-                        onClick={() => handleToggle('Both')}
-                        disabled={!canTrade || (formDisabled && runningButton !== 'Both')}
-                    >
-                        {runningButton === 'Both' ? 'Stop' : `Bulk ${pair.left.label} + ${pair.right.label}`}
-                    </button>
-                ) : (
-                    <>
-                        <button 
-                            className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' && !signal?.noTrade ? 'signal-match' : ''}`}
-                            onClick={() => handleToggle('Left')}
-                            disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
-                        >
-                            <span className="icon">{runningButton === 'Left' ? '■' : '⧈'}</span>
-                            {runningButton === 'Left' ? 'Stop' : `Bulk ${pair.left.label}`}
-                        </button>
-                        <button 
-                            className={`btn-action-ai ${runningButton === 'AI' ? 'running' : ''}`}
-                            onClick={() => handleToggle('AI')}
-                            disabled={!canTrade || (formDisabled && runningButton !== 'AI')}
-                        >
-                            {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
-                        </button>
-                        <button 
-                            className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' && !signal?.noTrade ? 'signal-match' : ''}`}
-                            onClick={() => handleToggle('Right')}
-                            disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
-                        >
-                            <span className="icon">{runningButton === 'Right' ? '■' : '▲'}</span>
-                            {runningButton === 'Right' ? 'Stop' : `Bulk ${pair.right.label}`}
-                        </button>
-                    </>
-                )}
-            </div>
-
-            <div className="footer-control-bar">
-                <div className="status-pill">
-                    {runningButton ? (
-                        <span>
-                            Running <strong>
-                                {runningButton === 'Left' ? pair.left.label
-                                    : runningButton === 'Right' ? pair.right.label
-                                    : runningButton === 'Both' ? `${pair.left.label} + ${pair.right.label}`
-                                    : `AI (${strategy})`}
-                                {lockedPrediction !== null ? ` · Digit ${lockedPrediction}` : ''}
-                            </strong> · {tradesFired}/{runningButton === 'Both' ? bulkCount * 2 : bulkCount} trade{bulkCount === 1 && runningButton !== 'Both' ? '' : 's'} fired
-                            {(autoFlipEnabled || stopWinEnabled) && ' · sequential (waiting for each result)'}
-                        </span>
-                    ) : (
-                        <span>Idle</span>
-                    )}
-                </div>
-                {lastError && <div className="error-pill">{lastError}</div>}
-                <div className="execution-pill">
-                    <span>Execution <strong>{executionMode}</strong></span>
-                    <label className="switch">
-                        <input 
-                            type="checkbox" 
-                            checked={executionMode === 'FAST'}
-                            disabled={formDisabled}
-                            onChange={(e) => setExecutionMode(e.target.checked ? 'FAST' : 'SLOW')}
-                        />
-                        <span className="slider"></span>
-                    </label>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-export default BulkTrader;
+                        </div
