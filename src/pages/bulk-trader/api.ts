@@ -1,7 +1,7 @@
 // src/pages/bulk-trader/api.ts
 const API_URL = 'https://digit-matrix-backend.onrender.com';
 
-// Fetch 1000-tick analysis from backend
+// Fetch 1000-tick deep analysis
 export const fetchAnalysis = async (marketSymbol: string) => {
     try {
         const res = await fetch(`${API_URL}/api/analysis/${marketSymbol}?lookback=1000`);
@@ -14,7 +14,18 @@ export const fetchAnalysis = async (marketSymbol: string) => {
     }
 };
 
-// Send ticks from frontend to backend
+// Fetch last 20 ticks from backend (signal uses these)
+export const fetchRecentTicks = async (marketSymbol: string, limit = 20) => {
+    try {
+        const res = await fetch(`${API_URL}/api/ticks/${marketSymbol}?limit=${limit}`);
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        return null;
+    }
+};
+
+// Send local ticks to backend so it can build the database
 export const sendTickToBackend = async (symbol: string, quote: number) => {
     try {
         await fetch(`${API_URL}/api/ticks`, {
