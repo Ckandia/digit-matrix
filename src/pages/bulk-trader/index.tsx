@@ -3,7 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
-import { fetchAnalysis, logTradeToBackend } from './api';
+import { fetchAnalysis, logTradeToBackend, sendTickToBackend } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
@@ -58,6 +58,15 @@ const BulkTrader = () => {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
+
+    // Send ticks from frontend to backend so analysis works (Render free tier WS is unreliable)
+    useEffect(() => {
+        if (tickSequence.length === 0) return;
+        const latest = tickSequence[tickSequence.length - 1];
+        if (latest && latest.quote && latest.symbol && tickSequence.length % 3 === 0) {
+            sendTickToBackend(latest.symbol, latest.quote);
+        }
+    }, [tickSequence]);
 
     // Fetch smart analysis from backend every 5 seconds
     useEffect(() => {
