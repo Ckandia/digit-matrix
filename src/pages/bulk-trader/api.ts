@@ -1,9 +1,7 @@
 // src/pages/bulk-trader/api.ts
-// This file talks to your free backend
+// This file talks to your free backend on Render.com
 
-const API_URL = 'YOUR_RENDER_URL'; // <-- PASTE YOUR LINK HERE, no slash at the end
-
-// Example: const API_URL = 'https://digit-matrix-api.onrender.com';
+const API_URL = 'https://digit-matrix-backend.onrender.com';
 
 // Fetch smart analysis from your backend (hot digit, cold digit, even/odd split)
 export const fetchAnalysis = async (marketSymbol: string) => {
