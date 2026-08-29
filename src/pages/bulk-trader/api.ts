@@ -1,37 +1,31 @@
 // src/pages/bulk-trader/api.ts
 const API_URL = 'https://digit-matrix-backend.onrender.com';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
+// Fetch smart analysis from your backend
 export const fetchAnalysis = async (marketSymbol: string) => {
     try {
-        // Render free tier sleeps after 15 min — try up to 3 times
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-
-            try {
-                const res = await fetch(
-                    `${API_URL}/api/analysis/${marketSymbol}?lookback=100`,
-                    { signal: controller.signal }
-                );
-                clearTimeout(timeout);
-
-                if (res.ok) {
-                    const data = await res.json();
-                    if (!data.error) return data;
-                }
-            } catch (e) {
-                clearTimeout(timeout);
-                if (attempt < 3) await sleep(3000); // wait 3s then retry
-            }
-        }
-        return null;
+        const res = await fetch(`${API_URL}/api/analysis/${marketSymbol}?lookback=100`);
+        if (!res.ok) return null;
+        return await res.json();
     } catch (e) {
         return null;
     }
 };
 
+// NEW: Send ticks from frontend to backend (works around Render WS issues)
+export const sendTickToBackend = async (symbol: string, quote: number) => {
+    try {
+        await fetch(`${API_URL}/api/ticks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol, quote }),
+        });
+    } catch (e) {
+        // silent fail — don't break the UI if backend is sleeping
+    }
+};
+
+// Save every trade to your backend
 export const logTradeToBackend = async (trade: {
     loginid?: string;
     market: string;
