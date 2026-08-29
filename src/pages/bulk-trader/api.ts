@@ -1,7 +1,6 @@
 // src/pages/bulk-trader/api.ts
 const API_URL = 'https://digit-matrix-backend.onrender.com';
 
-// Fetch smart analysis from your backend
 export const fetchAnalysis = async (marketSymbol: string) => {
     try {
         const res = await fetch(`${API_URL}/api/analysis/${marketSymbol}?lookback=100`);
@@ -12,7 +11,6 @@ export const fetchAnalysis = async (marketSymbol: string) => {
     }
 };
 
-// NEW: Send ticks from frontend to backend (works around Render WS issues)
 export const sendTickToBackend = async (symbol: string, quote: number) => {
     try {
         await fetch(`${API_URL}/api/ticks`, {
@@ -21,11 +19,10 @@ export const sendTickToBackend = async (symbol: string, quote: number) => {
             body: JSON.stringify({ symbol, quote }),
         });
     } catch (e) {
-        // silent fail — don't break the UI if backend is sleeping
+        // silent fail
     }
 };
 
-// Save every trade to your backend
 export const logTradeToBackend = async (trade: {
     loginid?: string;
     market: string;
