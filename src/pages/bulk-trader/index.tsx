@@ -31,8 +31,9 @@ const BulkTrader = () => {
     const [riskPercent, setRiskPercent] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
-    // Backend analysis data from your Render database
+    // Backend 1000-tick analysis
     const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
+    const [backendStatus, setBackendStatus] = useState<string>('Collecting 1000 ticks for analysis...');
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
@@ -59,23 +60,29 @@ const BulkTrader = () => {
         }
     }, [isConnected, market, subscribeTicks]);
 
-    // Send ticks from frontend to backend so analysis works (Render free tier WS is unreliable)
+    // Send ticks to backend for 1000-tick analysis
     useEffect(() => {
         if (tickSequence.length === 0) return;
         const latest = tickSequence[tickSequence.length - 1];
-        if (latest && latest.quote && latest.symbol && tickSequence.length % 3 === 0) {
+        if (latest && latest.quote && latest.symbol) {
             sendTickToBackend(latest.symbol, latest.quote);
+            setBackendStatus(`Sent ${tickSequence.length} ticks · Need 1000 for full analysis`);
         }
     }, [tickSequence]);
 
-    // Fetch smart analysis from backend every 5 seconds
+    // Fetch 1000-tick analysis from backend every 5 seconds
     useEffect(() => {
         const symbol = MARKET_MAPPING[market];
         if (!symbol) return;
 
         const load = async () => {
             const data = await fetchAnalysis(symbol);
-            if (data && !data.error) setBackendAnalysis(data);
+            if (data) {
+                setBackendAnalysis(data);
+                setBackendStatus(`1000-tick analysis ready · ${data.lookback} ticks loaded`);
+            } else {
+                setBackendStatus('Collecting ticks... (wait 60-90s for 1000 ticks)');
+            }
         };
 
         load();
@@ -214,7 +221,6 @@ const BulkTrader = () => {
             cumulativeProfitRef.current += settled.profit;
             peakProfitRef.current = Math.max(peakProfitRef.current, cumulativeProfitRef.current);
 
-            // Send trade result to your backend database
             logTradeToBackend({
                 loginid: accountInfo?.loginid,
                 market: MARKET_MAPPING[market],
@@ -378,17 +384,29 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {/* Backend Smart Analysis Card */}
-            {backendAnalysis && (
+            {/* 1000-Tick Backend Analysis Card */}
+            {backendAnalysis ? (
                 <div className="signal-card" style={{ borderColor: '#a855f7' }}>
                     <div className="signal-info">
-                        <span className="signal-label">BACKEND ANALYSIS (LAST {backendAnalysis.lookback} TICKS)</span>
+                        <span className="signal-label">1000-TICK BACKEND ANALYSIS</span>
                         <span className="signal-value" style={{ color: '#a855f7' }}>
-                            Hot: {backendAnalysis.hot_digit} · Cold: {backendAnalysis.cold_digit}
+                            Hot: {backendAnalysis.hot_digit} ({backendAnalysis.hot_pct}%) · Cold: {backendAnalysis.cold_digit} ({backendAnalysis.cold_pct}%)
                         </span>
                         <span className="signal-split">
                             Even {backendAnalysis.even_odd.even_pct}% · Odd {100 - backendAnalysis.even_odd.even_pct}% · 
-                            Last 10: {backendAnalysis.last_10_digits?.join(' ')}
+                            Max Streak: {backendAnalysis.max_streak?.digit}×{backendAnalysis.max_streak?.length}
+                        </span>
+                        <span className="signal-split" style={{ fontSize: '10px', marginTop: '4px' }}>
+                            Last 20: {backendAnalysis.last_20_digits?.join(' ')}
+                        </span>
+                    </div>
+                </div>
+            ) : (
+                <div className="signal-card" style={{ borderColor: '#64748b' }}>
+                    <div className="signal-info">
+                        <span className="signal-label">BACKEND STATUS</span>
+                        <span className="signal-value" style={{ color: '#94a3b8' }}>
+                            {backendStatus}
                         </span>
                     </div>
                 </div>
@@ -397,7 +415,7 @@ const BulkTrader = () => {
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
                     <div className="signal-info">
-                        <span className="signal-label">SIGNAL</span>
+                        <span className="signal-label">SIGNAL (20-TICK FAST)</span>
                         <span className="signal-value">
                             {signal.noTrade
                                 ? 'NO TRADE — too close to call'
