@@ -1,21 +1,37 @@
 // src/pages/bulk-trader/api.ts
-// This file talks to your free backend on Render.com
-
 const API_URL = 'https://digit-matrix-backend.onrender.com';
 
-// Fetch smart analysis from your backend (hot digit, cold digit, even/odd split)
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export const fetchAnalysis = async (marketSymbol: string) => {
     try {
-        const res = await fetch(`${API_URL}/api/analysis/${marketSymbol}?lookback=100`);
-        if (!res.ok) return null;
-        return await res.json();
+        // Render free tier sleeps after 15 min — try up to 3 times
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+
+            try {
+                const res = await fetch(
+                    `${API_URL}/api/analysis/${marketSymbol}?lookback=100`,
+                    { signal: controller.signal }
+                );
+                clearTimeout(timeout);
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (!data.error) return data;
+                }
+            } catch (e) {
+                clearTimeout(timeout);
+                if (attempt < 3) await sleep(3000); // wait 3s then retry
+            }
+        }
+        return null;
     } catch (e) {
-        console.log('Backend not ready yet');
         return null;
     }
 };
 
-// Save every trade to your backend so you have a history log
 export const logTradeToBackend = async (trade: {
     loginid?: string;
     market: string;
