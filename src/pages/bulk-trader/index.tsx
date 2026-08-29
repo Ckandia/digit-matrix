@@ -3,6 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
+import { fetchAnalysis, logTradeToBackend } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
@@ -30,6 +31,9 @@ const BulkTrader = () => {
     const [riskPercent, setRiskPercent] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
+    // Backend analysis data from your Render database
+    const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
+
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
     const directionRef = useRef<string>('');
@@ -54,6 +58,21 @@ const BulkTrader = () => {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
+
+    // Fetch smart analysis from backend every 5 seconds
+    useEffect(() => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) return;
+
+        const load = async () => {
+            const data = await fetchAnalysis(symbol);
+            if (data && !data.error) setBackendAnalysis(data);
+        };
+
+        load();
+        const interval = setInterval(load, 5000);
+        return () => clearInterval(interval);
+    }, [market]);
 
     useEffect(() => {
         tickSequenceRef.current = tickSequence;
@@ -185,6 +204,18 @@ const BulkTrader = () => {
         const onContractSettled = (settled: { contract_type: string; profit: number; won: boolean }) => {
             cumulativeProfitRef.current += settled.profit;
             peakProfitRef.current = Math.max(peakProfitRef.current, cumulativeProfitRef.current);
+
+            // Send trade result to your backend database
+            logTradeToBackend({
+                loginid: accountInfo?.loginid,
+                market: MARKET_MAPPING[market],
+                strategy: strategy,
+                contract_type: settled.contract_type,
+                stake: runStakeRef.current,
+                prediction: requiresPrediction ? runPredictionRef.current : undefined,
+                profit: settled.profit,
+                result: settled.won ? 'win' : 'loss',
+            });
 
             if (stopWinEnabled && cumulativeProfitRef.current > 0) {
                 stopLoop();
@@ -337,6 +368,22 @@ const BulkTrader = () => {
                     <span>Not connected to Deriv. Please log in to trade.</span>
                 )}
             </div>
+
+            {/* Backend Smart Analysis Card */}
+            {backendAnalysis && (
+                <div className="signal-card" style={{ borderColor: '#a855f7' }}>
+                    <div className="signal-info">
+                        <span className="signal-label">BACKEND ANALYSIS (LAST {backendAnalysis.lookback} TICKS)</span>
+                        <span className="signal-value" style={{ color: '#a855f7' }}>
+                            Hot: {backendAnalysis.hot_digit} · Cold: {backendAnalysis.cold_digit}
+                        </span>
+                        <span className="signal-split">
+                            Even {backendAnalysis.even_odd.even_pct}% · Odd {100 - backendAnalysis.even_odd.even_pct}% · 
+                            Last 10: {backendAnalysis.last_10_digits?.join(' ')}
+                        </span>
+                    </div>
+                </div>
+            )}
 
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
