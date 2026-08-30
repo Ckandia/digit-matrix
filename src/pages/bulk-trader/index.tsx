@@ -3,7 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
-import { fetchAnalysis, fetchRecentTicks, logTradeToBackend, sendTickToBackend } from './api';
+import { fetchAnalysis, logTradeToBackend, sendTickToBackend } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
@@ -31,8 +31,8 @@ const BulkTrader = () => {
     const [riskPercent, setRiskPercent] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
+    // Backend analysis (bonus feature — appears when backend has data)
     const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
-    const [backendStatus, setBackendStatus] = useState<string>('Waiting for backend data...');
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
@@ -53,14 +53,14 @@ const BulkTrader = () => {
     const tickSequenceRef = useRef<TickData[]>([]);
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    const backendTicksRef = useRef<any[]>([]);
-
+    // Subscribe to Deriv ticks
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
 
+    // Send every local tick to backend (silent background sync)
     useEffect(() => {
         if (tickSequence.length === 0) return;
         const latest = tickSequence[tickSequence.length - 1];
@@ -69,36 +69,18 @@ const BulkTrader = () => {
         }
     }, [tickSequence]);
 
-    useEffect(() => {
-        const symbol = MARKET_MAPPING[market];
-        if (!symbol) return;
-
-        const load = async () => {
-            const ticks = await fetchRecentTicks(symbol, 20);
-            if (ticks) backendTicksRef.current = ticks;
-        };
-
-        load();
-        const interval = setInterval(load, 2000);
-        return () => clearInterval(interval);
-    }, [market]);
-
+    // Fetch backend analysis every 10 seconds (bonus card)
     useEffect(() => {
         const symbol = MARKET_MAPPING[market];
         if (!symbol) return;
 
         const load = async () => {
             const data = await fetchAnalysis(symbol);
-            if (data) {
-                setBackendAnalysis(data);
-                setBackendStatus(`${data.lookback} ticks loaded`);
-            } else {
-                setBackendStatus('Collecting...');
-            }
+            if (data && !data.error) setBackendAnalysis(data);
         };
 
         load();
-        const interval = setInterval(load, 5000);
+        const interval = setInterval(load, 10000);
         return () => clearInterval(interval);
     }, [market]);
 
@@ -117,6 +99,7 @@ const BulkTrader = () => {
         }
     }, []);
 
+    // SIGNAL: uses LOCAL ticks (works immediately, no backend dependency)
     useEffect(() => {
         setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
@@ -124,14 +107,8 @@ const BulkTrader = () => {
 
         let hasSignal = false;
         const tryComputeInitial = () => {
-            if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                const tickData = backendTicksRef.current.map((t: any) => ({
-                    quote: t.quote,
-                    digit: t.digit,
-                    symbol: MARKET_MAPPING[market],
-                    epoch: Date.now() / 1000
-                }));
-                applySignal(computeSignal(strategy, tickData, predictionRef.current, duration));
+            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                 return true;
             }
             return false;
@@ -145,28 +122,12 @@ const BulkTrader = () => {
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
-                    if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                        const tickData = backendTicksRef.current.map((t: any) => ({
-                            quote: t.quote,
-                            digit: t.digit,
-                            symbol: MARKET_MAPPING[market],
-                            epoch: Date.now() / 1000
-                        }));
-                        applySignal(computeSignal(strategy, tickData, predictionRef.current, duration));
-                    }
+                    applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                     setIsEnterNow(true);
 
                     if (enterNowRefreshRef.current) clearInterval(enterNowRefreshRef.current);
                     enterNowRefreshRef.current = setInterval(() => {
-                        if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                            const tickData = backendTicksRef.current.map((t: any) => ({
-                                quote: t.quote,
-                                digit: t.digit,
-                                symbol: MARKET_MAPPING[market],
-                                epoch: Date.now() / 1000
-                            }));
-                            applySignal(computeSignal(strategy, tickData, predictionRef.current, duration));
-                        }
+                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
                     }, 500);
 
                     setTimeout(() => {
@@ -418,7 +379,8 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {backendAnalysis ? (
+            {/* Backend Analysis — appears only when backend has data */}
+            {backendAnalysis && (
                 <div className="signal-card" style={{ borderColor: '#a855f7' }}>
                     <div className="signal-info">
                         <span className="signal-label">1000-TICK BACKEND ANALYSIS</span>
@@ -434,21 +396,13 @@ const BulkTrader = () => {
                         </span>
                     </div>
                 </div>
-            ) : (
-                <div className="signal-card" style={{ borderColor: '#64748b' }}>
-                    <div className="signal-info">
-                        <span className="signal-label">BACKEND STATUS</span>
-                        <span className="signal-value" style={{ color: '#94a3b8' }}>
-                            {backendStatus}
-                        </span>
-                    </div>
-                </div>
             )}
 
+            {/* Local Signal — works immediately, no backend needed */}
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
                     <div className="signal-info">
-                        <span className="signal-label">SIGNAL (BACKEND 20-TICK)</span>
+                        <span className="signal-label">SIGNAL</span>
                         <span className="signal-value">
                             {signal.noTrade
                                 ? 'NO TRADE — too close to call'
@@ -471,10 +425,10 @@ const BulkTrader = () => {
                 <div className="signal-card analyzing">
                     <div className="signal-info">
                         <span className="signal-label">SIGNAL</span>
-                        <span className="signal-value">Waiting for backend ticks...</span>
+                        <span className="signal-value">Analyzing market…</span>
                     </div>
                     <div className="signal-countdown">
-                        <span>Backend collecting {MIN_TICKS_FOR_SIGNAL} ticks</span>
+                        <span>Gathering {MIN_TICKS_FOR_SIGNAL} ticks before first signal</span>
                     </div>
                 </div>
             )}
