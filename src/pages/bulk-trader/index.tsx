@@ -31,7 +31,6 @@ const BulkTrader = () => {
     const [riskPercent, setRiskPercent] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
-    // Backend analysis (bonus feature — appears when backend has data)
     const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
@@ -53,14 +52,12 @@ const BulkTrader = () => {
     const tickSequenceRef = useRef<TickData[]>([]);
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    // Subscribe to Deriv ticks
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
 
-    // Send every local tick to backend (silent background sync)
     useEffect(() => {
         if (tickSequence.length === 0) return;
         const latest = tickSequence[tickSequence.length - 1];
@@ -69,7 +66,6 @@ const BulkTrader = () => {
         }
     }, [tickSequence]);
 
-    // Fetch backend analysis every 10 seconds (bonus card)
     useEffect(() => {
         const symbol = MARKET_MAPPING[market];
         if (!symbol) return;
@@ -99,7 +95,6 @@ const BulkTrader = () => {
         }
     }, []);
 
-    // SIGNAL: uses LOCAL ticks (works immediately, no backend dependency)
     useEffect(() => {
         setSignal(null);
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
@@ -379,7 +374,6 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {/* Backend Analysis — appears only when backend has data */}
             {backendAnalysis && (
                 <div className="signal-card" style={{ borderColor: '#a855f7' }}>
                     <div className="signal-info">
@@ -388,7 +382,7 @@ const BulkTrader = () => {
                             Hot: {backendAnalysis.hot_digit} ({backendAnalysis.hot_pct}%) · Cold: {backendAnalysis.cold_digit} ({backendAnalysis.cold_pct}%)
                         </span>
                         <span className="signal-split">
-                            Even {backendAnalysis.even_odd.even_pct}% · Odd {100 - backendAnalysis.even_odd.even_pct}% · 
+                            Even {backendAnalysis.even_odd?.even_pct ?? 0}% · Odd {100 - (backendAnalysis.even_odd?.even_pct ?? 0)}% · 
                             Max Streak: {backendAnalysis.max_streak?.digit}×{backendAnalysis.max_streak?.length}
                         </span>
                         <span className="signal-split" style={{ fontSize: '10px', marginTop: '4px' }}>
@@ -398,7 +392,6 @@ const BulkTrader = () => {
                 </div>
             )}
 
-            {/* Local Signal — works immediately, no backend needed */}
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
                     <div className="signal-info">
@@ -557,135 +550,113 @@ const BulkTrader = () => {
                                 Both Sides
                                 <i
                                     className="info-icon"
-                                    data-tooltip={`Buy ${pair.left.label} and ${pair.right.label} at the same time every round — with sub-100% payouts this guarantees a net loss over many rounds (house edge on both sides), not a hedge`}
+                                    data-tooltip="Trade both directions simultaneously"
                                 >i</i>
                             </span>
                         </label>
-                        {autoFlipEnabled && (
-                            <label className="checkbox-field">
-                                <input
-                                    type="checkbox"
-                                    checked={adaptiveStakeEnabled}
-                                    disabled={formDisabled}
-                                    onChange={(e) => setAdaptiveStakeEnabled(e.target.checked)}
-                                />
-                                <span>
-                                    Adaptive Stake
-                                    <i
-                                        className="info-icon"
-                                        data-tooltip="Size the recovery cap from your account balance + profit already banked this session, instead of a fixed dollar cap — protects starting capital, doesn't guarantee a profitable session"
-                                    >i</i>
-                                </span>
-                            </label>
-                        )}
                     </div>
 
                     {autoFlipEnabled && (
                         <div className="form-row">
-                            {adaptiveStakeEnabled ? (
+                            <div className="form-group">
+                                <label>MAX STAKE (USD)</label>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0.35"
+                                    value={maxStake}
+                                    disabled={formDisabled}
+                                    onChange={(e) => setMaxStake(Number(e.target.value))}
+                                />
+                            </div>
+                            <div className="form-group checkbox-group">
+                                <label className="checkbox-field">
+                                    <input
+                                        type="checkbox"
+                                        checked={adaptiveStakeEnabled}
+                                        disabled={formDisabled}
+                                        onChange={(e) => setAdaptiveStakeEnabled(e.target.checked)}
+                                    />
+                                    <span>
+                                        Adaptive Stake
+                                        <i className="info-icon" data-tooltip="Cap stake based on balance %">i</i>
+                                    </span>
+                                </label>
+                            </div>
+                            {adaptiveStakeEnabled && (
                                 <div className="form-group">
-                                    <label>RISK % OF BALANCE</label>
+                                    <label>RISK %</label>
                                     <input
                                         type="number"
-                                        step="0.5"
-                                        min="1"
-                                        max="50"
+                                        step="0.1"
+                                        min="0.1"
+                                        max="100"
                                         value={riskPercent}
                                         disabled={formDisabled}
                                         onChange={(e) => setRiskPercent(Number(e.target.value))}
                                     />
-                                    <small className="field-hint">Recovery cap = this % of your starting balance, plus any profit already banked this session</small>
-                                </div>
-                            ) : (
-                                <div className="form-group">
-                                    <label>MAX STAKE (USD)</label>
-                                    <input
-                                        type="number"
-                                        step="0.1"
-                                        min={stake}
-                                        value={maxStake}
-                                        disabled={formDisabled}
-                                        onChange={(e) => setMaxStake(Number(e.target.value))}
-                                    />
-                                    <small className="field-hint">Caps how high the recovery stake can climb while the session is in loss</small>
                                 </div>
                             )}
                         </div>
                     )}
-                </div>
 
-                <div className="visualizer-card">
-                    <DigitDisplay ticks={tickSequence} mode={digitDisplayMode} />
-                </div>
-            </div>
+                    <div className="form-row">
+                        <div className="form-group">
+                            <label>EXECUTION MODE</label>
+                            <select 
+                                value={executionMode} 
+                                disabled={formDisabled} 
+                                onChange={(e) => setExecutionMode(e.target.value as TradeExecutionMode)}
+                            >
+                                <option value="FAST">FAST</option>
+                                <option value="SEQUENTIAL">SEQUENTIAL</option>
+                            </select>
+                        </div>
+                    </div>
 
-            <div className="action-pad-card">
-                {bothSidesEnabled ? (
-                    <button
-                        className={`btn-action-both ${runningButton === 'Both' ? 'running' : ''}`}
-                        onClick={() => handleToggle('Both')}
-                        disabled={!canTrade || (formDisabled && runningButton !== 'Both')}
-                    >
-                        {runningButton === 'Both' ? 'Stop' : `Bulk ${pair.left.label} + ${pair.right.label}`}
-                    </button>
-                ) : (
-                    <>
-                        <button 
-                            className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' && !signal?.noTrade ? 'signal-match' : ''}`}
+                    <div className="action-buttons">
+                        <button
+                            className={`action-btn left ${runningButton === 'Left' ? 'active' : ''}`}
+                            disabled={!canTrade || (!!runningButton && runningButton !== 'Left')}
                             onClick={() => handleToggle('Left')}
-                            disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
                         >
-                            <span className="icon">{runningButton === 'Left' ? '■' : '⧈'}</span>
-                            {runningButton === 'Left' ? 'Stop' : `Bulk ${pair.left.label}`}
+                            {pair.left.label}
                         </button>
-                        <button 
-                            className={`btn-action-ai ${runningButton === 'AI' ? 'running' : ''}`}
+                        <button
+                            className={`action-btn ai ${runningButton === 'AI' ? 'active' : ''}`}
+                            disabled={!canTrade || (!!runningButton && runningButton !== 'AI')}
                             onClick={() => handleToggle('AI')}
-                            disabled={!canTrade || (formDisabled && runningButton !== 'AI')}
                         >
-                            {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
+                            AI
                         </button>
-                        <button 
-                            className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' && !signal?.noTrade ? 'signal-match' : ''}`}
+                        <button
+                            className={`action-btn right ${runningButton === 'Right' ? 'active' : ''}`}
+                            disabled={!canTrade || (!!runningButton && runningButton !== 'Right')}
                             onClick={() => handleToggle('Right')}
-                            disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
                         >
-                            <span className="icon">{runningButton === 'Right' ? '■' : '▲'}</span>
-                            {runningButton === 'Right' ? 'Stop' : `Bulk ${pair.right.label}`}
+                            {pair.right.label}
                         </button>
-                    </>
-                )}
-            </div>
+                        <button
+                            className={`action-btn both ${runningButton === 'Both' ? 'active' : ''}`}
+                            disabled={!canTrade || (!!runningButton && runningButton !== 'Both')}
+                            onClick={() => handleToggle('Both')}
+                        >
+                            Both
+                        </button>
+                    </div>
 
-            <div className="footer-control-bar">
-                <div className="status-pill">
-                    {runningButton ? (
-                        <span>
-                            Running <strong>
-                                {runningButton === 'Left' ? pair.left.label
-                                    : runningButton === 'Right' ? pair.right.label
-                                    : runningButton === 'Both' ? `${pair.left.label} + ${pair.right.label}`
-                                    : `AI (${strategy})`}
-                                {lockedPrediction !== null ? ` · Digit ${lockedPrediction}` : ''}
-                            </strong> · {tradesFired}/{runningButton === 'Both' ? bulkCount * 2 : bulkCount} trade{bulkCount === 1 && runningButton !== 'Both' ? '' : 's'} fired
-                            {(autoFlipEnabled || stopWinEnabled) && ' · sequential (waiting for each result)'}
-                        </span>
-                    ) : (
-                        <span>Idle</span>
+                    <DigitDisplay mode={digitDisplayMode} ticks={tickSequence} lockedPrediction={lockedPrediction} />
+
+                    {lastError && (
+                        <div className="error-banner">
+                            {lastError}
+                        </div>
                     )}
-                </div>
-                {lastError && <div className="error-pill">{lastError}</div>}
-                <div className="execution-pill">
-                    <span>Execution <strong>{executionMode}</strong></span>
-                    <label className="switch">
-                        <input 
-                            type="checkbox" 
-                            checked={executionMode === 'FAST'}
-                            disabled={formDisabled}
-                            onChange={(e) => setExecutionMode(e.target.checked ? 'FAST' : 'SLOW')}
-                        />
-                        <span className="slider"></span>
-                    </label>
+
+                    <div className="status-bar">
+                        <span>Trades Fired: {tradesFired}</span>
+                        {runningButton && <span className="running-indicator">Running: {runningButton}</span>}
+                    </div>
                 </div>
             </div>
         </div>
