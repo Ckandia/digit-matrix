@@ -1,10 +1,15 @@
 // src/pages/bulk-trader/api.ts
-const API_URL = 'https://digit-matrix-backend.onrender.com';
+const API_URL = 'https://digit-matrix-backend.onrender.com'; // Update this if your Render URL changed
 
-// Fetch 1000-tick analysis from backend
-export const fetchAnalysis = async (marketSymbol: string) => {
+export interface BackendTick {
+    quote: number;
+    digit: number;
+    timestamp?: number;
+}
+
+export const fetchAnalysis = async (marketSymbol: string): Promise<any | null> => {
     try {
-        const res = await fetch(`${API_URL}/api/analysis/${marketSymbol}?lookback=1000`);
+        const res = await fetch(`${API_URL}/api/analysis/${encodeURIComponent(marketSymbol)}?lookback=1000`);
         if (!res.ok) return null;
         const data = await res.json();
         if (data.error) return null;
@@ -14,8 +19,19 @@ export const fetchAnalysis = async (marketSymbol: string) => {
     }
 };
 
-// Send local ticks to backend so it can build history over time
-export const sendTickToBackend = async (symbol: string, quote: number) => {
+export const fetchRecentTicks = async (marketSymbol: string, limit: number = 20): Promise<BackendTick[] | null> => {
+    try {
+        const res = await fetch(`${API_URL}/api/ticks/${encodeURIComponent(marketSymbol)}?limit=${limit}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!Array.isArray(data)) return null;
+        return data as BackendTick[];
+    } catch (e) {
+        return null;
+    }
+};
+
+export const sendTickToBackend = async (symbol: string, quote: number): Promise<void> => {
     try {
         await fetch(`${API_URL}/api/ticks`, {
             method: 'POST',
@@ -27,7 +43,6 @@ export const sendTickToBackend = async (symbol: string, quote: number) => {
     }
 };
 
-// Save every trade to backend
 export const logTradeToBackend = async (trade: {
     loginid?: string;
     market: string;
@@ -37,7 +52,7 @@ export const logTradeToBackend = async (trade: {
     prediction?: number;
     profit: number;
     result: string;
-}) => {
+}): Promise<void> => {
     try {
         await fetch(`${API_URL}/api/trades`, {
             method: 'POST',
