@@ -1,13 +1,6 @@
-// src/pages/bulk-trader/api.ts
-const API_URL = 'https://digit-matrix-backend.onrender.com'; // Change this if your Render URL is different
+const API_URL = 'https://digit-matrix-backend.onrender.com';
 
-export interface BackendTick {
-    quote: number;
-    digit: number;
-    timestamp?: number;
-}
-
-export const fetchAnalysis = async (marketSymbol: string): Promise<any | null> => {
+export const fetchAnalysis = async (marketSymbol: string) => {
     try {
         const res = await fetch(`${API_URL}/api/analysis/${encodeURIComponent(marketSymbol)}?lookback=1000`);
         if (!res.ok) return null;
@@ -19,19 +12,19 @@ export const fetchAnalysis = async (marketSymbol: string): Promise<any | null> =
     }
 };
 
-export const fetchRecentTicks = async (marketSymbol: string, limit: number = 20): Promise<BackendTick[] | null> => {
+export const fetchRecentTicks = async (marketSymbol: string, limit: number = 20) => {
     try {
         const res = await fetch(`${API_URL}/api/ticks/${encodeURIComponent(marketSymbol)}?limit=${limit}`);
         if (!res.ok) return null;
         const data = await res.json();
         if (!Array.isArray(data)) return null;
-        return data as BackendTick[];
+        return data;
     } catch (e) {
         return null;
     }
 };
 
-export const sendTickToBackend = async (symbol: string, quote: number): Promise<void> => {
+export const sendTickToBackend = async (symbol: string, quote: number) => {
     try {
         await fetch(`${API_URL}/api/ticks`, {
             method: 'POST',
@@ -39,7 +32,7 @@ export const sendTickToBackend = async (symbol: string, quote: number): Promise<
             body: JSON.stringify({ symbol, quote }),
         });
     } catch (e) {
-        // silent fail — backend might be sleeping
+        // silent fail
     }
 };
 
@@ -52,7 +45,7 @@ export const logTradeToBackend = async (trade: {
     prediction?: number;
     profit: number;
     result: string;
-}): Promise<void> => {
+}) => {
     try {
         await fetch(`${API_URL}/api/trades`, {
             method: 'POST',
