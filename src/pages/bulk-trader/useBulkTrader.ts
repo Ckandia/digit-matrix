@@ -5,386 +5,348 @@ import { useStore } from '@/hooks/useStore';
 import { TickData, TradeExecutionMode } from './types';
 
 export interface BulkTraderAccountInfo {
-    loginid?: string;
-    currency?: string;
-    balance?: number;
+  loginid?: string;
+  currency?: string;
+  balance?: number;
 }
 
 export const useBulkTrader = () => {
-    const { transactions, journal, summary_card } = useStore();
-    const [isConnected, setIsConnected] = useState<boolean>(false);
-    const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
-    const [accountInfo, setAccountInfo] = useState<BulkTraderAccountInfo | null>(null);
-    const [tickSequence, setTickSequence] = useState<TickData[]>([]);
-    
-    const activeSymbolRef = useRef<string>('1HZ10V');
-    const subscriptionIdRef = useRef<string | null>(null);
+  const { transactions, journal, summary_card } = useStore();
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
+  const [accountInfo, setAccountInfo] = useState<BulkTraderAccountInfo | null>(null);
+  const [tickSequence, setTickSequence] = useState<TickData[]>([]);
 
-    useEffect(() => {
-        const checkStatus = () => {
-            const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
+  const activeSymbolRef = useRef<string>('1HZ10V');
+  const subscriptionIdRef = useRef<string | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const retryCountRef = useRef<number>(0);
 
-            // api_base.is_authorized is the single source of truth the rest of the app
-            // (dashboard, bot-builder) relies on once the OAuth/token authorize call succeeds.
-            const authorized = !!api_base.is_authorized;
+  useEffect(() => {
+    const checkStatus = () => {
+      const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
+      const authorized = !!api_base.is_authorized;
 
-            setIsConnected(hasConnection);
-            setIsAuthorized(authorized);
-            setAccountInfo(authorized ? (api_base.account_info as BulkTraderAccountInfo) : null);
-        };
+      setIsConnected(hasConnection);
+      setIsAuthorized(authorized);
+      setAccountInfo(authorized ? (api_base.account_info as BulkTraderAccountInfo) : null);
 
-        checkStatus();
-        const interval = setInterval(checkStatus, 500);
-        return () => clearInterval(interval);
-    }, []);
+      // Handle automatic reconnection when WebSocket drops
+      if (!hasConnection && api_base.api) {
+        if (!reconnectTimeoutRef.current) {
+          const baseDelay = 1000;
+          const maxDelay = 30000;
+          const delay = Math.min(baseDelay * Math.pow(2, retryCountRef.current), maxDelay);
 
-    // IMPORTANT (multi-account safety): switching Deriv accounts (or a network
-    // drop/reconnect) tears down and replaces api_base.api with a brand-new
-    // WebSocket instance. A tick subscription set up once on mount would keep
-    // listening to the OLD, now-dead socket forever — ticks would silently stop
-    // updating after any account switch, with no error shown. Re-running this
-    // effect whenever isConnected changes re-binds the listener to whichever
-    // socket is actually live right now.
-    useEffect(() => {
-        if (!isConnected) return;
+          console.log(`[BulkTrader] Connection lost. Attempting reconnect in ${delay / 1000}s...`);
+          retryCountRef.current += 1;
 
-        const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
-            if (data?.msg_type === 'tick' && data.tick) {
-                if (data.tick.symbol === activeSymbolRef.current) {
-                    if (data.subscription?.id) {
-                        subscriptionIdRef.current = data.subscription.id;
-                    }
-
-                    // Each market has its own decimal precision (pip_size) — e.g. Vol 10
-                    // quotes 3 decimals, Vol 100 quotes 2, Step Index quotes 1. Using
-                    // quote.toString() directly is unreliable because JS drops trailing
-                    // zeros (1.10000 -> "1.1"), silently corrupting the last digit.
-                    // api_base.pip_sizes (populated from active_symbols) gives the real
-                    // decimal count per symbol; toFixed() to that count is the correct way
-                    // to reconstruct the digit exactly as Deriv's own digit contracts see it.
-                    const pipSizes = (api_base as any).pip_sizes as Record<string, number> | undefined;
-                    const knownDecimals = pipSizes?.[data.tick.symbol];
-                    const decimalPlaces =
-                        typeof knownDecimals === 'number'
-                            ? knownDecimals
-                            : (() => {
-                                  // Fallback while active_symbols hasn't loaded yet — infer
-                                  // from the raw quote's own string. Can undercount if
-                                  // trailing zeros were already dropped, but only applies
-                                  // for the brief window before pip_sizes is populated.
-                                  const str = data.tick.quote.toString();
-                                  const dot = str.indexOf('.');
-                                  return dot === -1 ? 0 : str.length - dot - 1;
-                              })();
-
-                    const formattedQuote = Number(data.tick.quote).toFixed(decimalPlaces);
-                    const lastDigit = parseInt(formattedQuote.slice(-1), 10);
-                    const isEven = lastDigit % 2 === 0;
-
-                    const newTick: TickData = {
-                        epoch: data.tick.epoch,
-                        quote: data.tick.quote,
-                        digit: lastDigit,
-                        type: isEven ? 'E' : 'O',
-                    };
-
-                    setTickSequence((prev) => [...prev.slice(-49), newTick]);
-                }
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            if (typeof (api_base as any).init === 'function') {
+              (api_base as any).init();
+            } else if (api_base.api?.connection) {
+              api_base.api.init();
             }
-        });
-
-        return () => {
-            subscription?.unsubscribe();
-        };
-    }, [isConnected]);
-
-    const subscribeTicks = useCallback(async (symbol: string) => {
-        if (!symbol || !api_base.api) return;
-        
-        if (subscriptionIdRef.current) {
-            try {
-                await api_base.api.send({ forget: subscriptionIdRef.current });
-            } catch (err) {
-                // Ignore cleanup error if already forgotten
-            }
-            subscriptionIdRef.current = null;
+          }, delay);
         }
+      } else if (hasConnection) {
+        // Reset retry counter upon successful connection restore
+        retryCountRef.current = 0;
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
+        }
+      }
+    };
 
-        activeSymbolRef.current = symbol;
-        setTickSequence([]);
+    checkStatus();
+    const interval = setInterval(checkStatus, 500);
+
+    return () => {
+      clearInterval(interval);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Re-subscribe to live ticks whenever connection restores or market symbol updates
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Auto resubscribe active symbol on socket reconnect
+    if (activeSymbolRef.current && api_base.api) {
+      api_base.api.send({
+        ticks: activeSymbolRef.current,
+        subscribe: 1,
+      }).catch((err: any) => {
+        console.error('[BulkTrader] Failed to re-subscribe ticks after reconnection:', err);
+      });
+    }
+
+    const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
+      if (data?.msg_type === 'tick' && data.tick) {
+        if (data.tick.symbol === activeSymbolRef.current) {
+          if (data.subscription?.id) {
+            subscriptionIdRef.current = data.subscription.id;
+          }
+
+          const pipSizes = (api_base as any).pip_sizes as Record<string, number> | undefined;
+          const knownDecimals = pipSizes?.[data.tick.symbol];
+          const decimalPlaces =
+            typeof knownDecimals === 'number'
+              ? knownDecimals
+              : (() => {
+                  const str = data.tick.quote.toString();
+                  const dot = str.indexOf('.');
+                  return dot === -1 ? 0 : str.length - dot - 1;
+                })();
+
+          const formattedQuote = Number(data.tick.quote).toFixed(decimalPlaces);
+          const lastDigit = parseInt(formattedQuote.slice(-1), 10);
+          const isEven = lastDigit % 2 === 0;
+
+          const newTick: TickData = {
+            epoch: data.tick.epoch,
+            quote: data.tick.quote,
+            digit: lastDigit,
+            type: isEven ? 'E' : 'O',
+          };
+
+          setTickSequence((prev) => [...prev.slice(-49), newTick]);
+        }
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, [isConnected]);
+
+  const subscribeTicks = useCallback(async (symbol: string) => {
+    if (!symbol || !api_base.api) return;
+
+    if (subscriptionIdRef.current) {
+      try {
+        await api_base.api.send({ forget: subscriptionIdRef.current });
+      } catch (err) {
+        // Ignore cleanup error if already forgotten
+      }
+      subscriptionIdRef.current = null;
+    }
+
+    activeSymbolRef.current = symbol;
+    setTickSequence([]);
+
+    try {
+      await api_base.api.send({
+        ticks: symbol,
+        subscribe: 1,
+      });
+    } catch (err) {
+      console.error('Error subscribing to ticks on shared socket:', err);
+    }
+  }, []);
+
+  const trackContract = useCallback(
+    (
+      contractId: number,
+      contractType: string,
+      onSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
+    ) => {
+      if (!api_base.api) return;
+
+      const sub = api_base.api.onMessage().subscribe(({ data }: any) => {
+        if (data?.msg_type === 'proposal_open_contract' && data.proposal_open_contract?.contract_id === contractId) {
+          const contract = data.proposal_open_contract;
+          const accountID = (api_base.account_info as any)?.loginid;
+
+          transactions.onBotContractEvent({ accountID, ...contract });
+          summary_card.onBotContractEvent({ accountID, ...contract });
+
+          if (contract.is_sold || contract.status !== 'open') {
+            journal.onLogSuccess({
+              log_type: LogTypes.SELL,
+              extra: { sold_for: contract.sell_price } as any,
+            });
+
+            const profit = Number(contract.profit);
+            journal.onLogSuccess({
+              log_type: profit > 0 ? LogTypes.PROFIT : LogTypes.LOST,
+              extra: { currency: contract.currency, profit },
+            });
+
+            onSettled?.({ contract_type: contractType, profit, won: profit > 0 });
+
+            sub.unsubscribe();
+          }
+        }
+      });
+
+      api_base.pushSubscription?.(sub as any);
+
+      (api_base.api
+        .send({
+          proposal_open_contract: 1,
+          contract_id: contractId,
+          subscribe: 1,
+        }) as any as Promise<any>
+      ).catch((err: any) => {
+        console.error('[BulkTrader] Failed to subscribe to contract updates:', err);
+      });
+    },
+    [transactions, summary_card, journal]
+  );
+
+  const executeBulkTrades = useCallback(
+    (
+      mode: TradeExecutionMode,
+      count: number,
+      staticParams: { symbol: string; duration: number },
+      getDynamicParams: () => { contract_type: string; prediction?: number; amount: number },
+      onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void,
+      onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void,
+      sequential: boolean = false,
+      onBatchComplete?: () => void
+    ): (() => void) => {
+      if (!api_base.api || !api_base.is_authorized) {
+        console.error('[BulkTrader] Cannot trade — not connected/authorized to a Deriv account.');
+        onTradeResult?.({ index: -1, success: false, error: 'Not connected to your Deriv account.' });
+        return () => {};
+      }
+
+      const loginIdAtStart = (api_base.account_info as any)?.loginid;
+      const delay = mode === 'FAST' ? 50 : 300;
+      let cancelled = false;
+
+      const isFatalAccountError = (error: any): boolean => {
+        const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+        return (
+          text.includes('turnover limit') ||
+          text.includes('daily limit') ||
+          text.includes('trading limit') ||
+          text.includes('insufficient balance') ||
+          text.includes('self-exclusion') ||
+          text.includes('self exclusion') ||
+          text.includes('exceed your')
+        );
+      };
+
+      const fireOneTrade = async (i: number): Promise<void> => {
+        if (cancelled) return;
+
+        const currentLoginId = (api_base.account_info as any)?.loginid;
+        if (currentLoginId !== loginIdAtStart) {
+          console.warn('[BulkTrader] Skipping trade — active account changed since this run started.');
+          onTradeResult?.({ index: i, success: false, error: 'Account changed — trade skipped for safety.' });
+          return;
+        }
 
         try {
-            await api_base.api.send({
-                ticks: symbol,
-                subscribe: 1
-            });
-        } catch (err) {
-            console.error('Error subscribing to ticks on shared socket:', err);
+          const dynamic = getDynamicParams();
+
+          const req: any = {
+            buy: '1',
+            price: dynamic.amount,
+            parameters: {
+              amount: dynamic.amount,
+              basis: 'stake',
+              contract_type: dynamic.contract_type,
+              currency: 'USD',
+              duration: staticParams.duration,
+              duration_unit: 't',
+              underlying_symbol: staticParams.symbol,
+            },
+          };
+
+          if (dynamic.prediction !== undefined) {
+            req.parameters.barrier = String(dynamic.prediction);
+          }
+
+          console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
+          const response: any = await api_base.api.send(req);
+          console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
+
+          if (cancelled) return;
+
+          if (response?.error) {
+            const fatal = isFatalAccountError(response.error);
+            const baseMsg =
+              response.error.message ||
+              `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
+            const errMsg = fatal ? `${baseMsg} — stopping remaining trades in this batch` : baseMsg;
+            onTradeResult?.({ index: i, success: false, error: errMsg });
+
+            if (fatal) {
+              cancelled = true;
+            }
+          } else {
+            if (response?.buy?.contract_id) {
+              journal.onLogSuccess({
+                log_type: LogTypes.PURCHASE,
+                extra: { transaction_id: response.buy.transaction_id } as any,
+              });
+
+              if (sequential) {
+                await new Promise<void>((resolve) => {
+                  trackContract(response.buy.contract_id, dynamic.contract_type, (settled) => {
+                    onContractSettled?.(settled);
+                    resolve();
+                  });
+                });
+              } else {
+                trackContract(response.buy.contract_id, dynamic.contract_type, onContractSettled);
+              }
+            }
+            onTradeResult?.({ index: i, success: true });
+          }
+        } catch (err: any) {
+          console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
+          onTradeResult?.({ index: i, success: false, error: err?.message || 'Trade failed (network/unknown error)' });
         }
-    }, []);
+      };
 
-    // After a successful buy, subscribe to proposal_open_contract for that
-    // specific contract and push every update straight into the Transactions
-    // and Summary stores, and log Sell/Profit/Loss entries into the Journal —
-    // the same store methods and LogTypes the bot engine's own OpenContract/
-    // Sell/Total trackers use (see external/bot-skeleton/.../trade/OpenContract.js,
-    // Sell.js, Total.js). Purchase.js's LogTypes.PURCHASE entry is logged separately
-    // right after the buy succeeds, in executeBulkTrades below.
-    //
-    // IMPORTANT: we call these store methods directly rather than going through the
-    // 'bot.contract' / 'ui.log.success' global observer events. Those are only wired
-    // up inside run_panel_store.onRunButtonClick() / onMount() in ways tied to the
-    // Bot Builder's own run lifecycle, so relying on them would be fragile for trades
-    // fired from the Bulk Trader. Calling the store methods directly sidesteps that
-    // registration lifecycle entirely and still reuses the exact same Transactions/
-    // Summary/Journal panels — no duplicate history system.
-    //
-    // Note on Summary specifically: it's designed to show one "currently live"
-    // contract at a time (mirroring a single bot run). With Bulk Trader firing many
-    // contracts in parallel, Summary will jump between whichever contract most
-    // recently updated rather than showing all of them — that's an inherent
-    // limitation of reusing a single-contract view for multi-contract trading, not a
-    // bug. Transactions (the full list) is where all the trades are visible.
-    const trackContract = useCallback((
-        contractId: number,
-        contractType: string,
-        onSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
-    ) => {
-        if (!api_base.api) return;
+      const timeoutIds: ReturnType<typeof setTimeout>[] = [];
 
-        const sub = api_base.api.onMessage().subscribe(({ data }: any) => {
-            if (data?.msg_type === 'proposal_open_contract' && data.proposal_open_contract?.contract_id === contractId) {
-                const contract = data.proposal_open_contract;
-                const accountID = (api_base.account_info as any)?.loginid;
-
-                transactions.onBotContractEvent({ accountID, ...contract });
-                summary_card.onBotContractEvent({ accountID, ...contract });
-
-                // Contract finished (sold or expired) — log the same Sell + Profit/Loss
-                // journal entries the bot engine logs on settlement, then stop listening.
-                if (contract.is_sold || contract.status !== 'open') {
-                    journal.onLogSuccess({
-                        log_type: LogTypes.SELL,
-                        extra: { sold_for: contract.sell_price } as any,
-                    });
-
-                    const profit = Number(contract.profit);
-                    journal.onLogSuccess({
-                        log_type: profit > 0 ? LogTypes.PROFIT : LogTypes.LOST,
-                        extra: { currency: contract.currency, profit },
-                    });
-
-                    onSettled?.({ contract_type: contractType, profit, won: profit > 0 });
-
-                    sub.unsubscribe();
-                }
+      if (sequential) {
+        (async () => {
+          for (let i = 0; i < count; i++) {
+            if (cancelled) break;
+            await fireOneTrade(i);
+            if (cancelled) break;
+            if (i < count - 1) {
+              await new Promise((resolve) => setTimeout(resolve, delay));
             }
-        });
-
-        api_base.pushSubscription?.(sub as any);
-
-        (api_base.api
-            .send({
-                proposal_open_contract: 1,
-                contract_id: contractId,
-                subscribe: 1,
-            }) as any as Promise<any>
-        ).catch((err: any) => {
-            console.error('[BulkTrader] Failed to subscribe to contract updates:', err);
-        });
-    }, [transactions, summary_card, journal]);
-
-    // NOTE ON EXECUTION MODEL: bulkCount is the TOTAL number of trades for this run,
-    // not a per-cycle amount that repeats forever. getDynamicParams() is called fresh
-    // immediately before each individual trade fires (not once for the whole batch) —
-    // this is what lets Auto Flip, an updated Prediction digit, and a stake-recovery
-    // increase all take effect trade-by-trade within a single run, not just between
-    // separate runs.
-    //
-    // sequential MUST be true whenever Auto Flip or Stop Win is active. Reasoning:
-    // in the default (non-sequential) mode, all `count` trades are staggered only
-    // 50-300ms apart, but each trade takes at least one tick's duration (often
-    // 1-2+ seconds) to settle. That means the whole batch is usually done FIRING
-    // before the FIRST trade even settles — so a flip-after-loss or stop-after-profit
-    // decision never has a chance to affect any of the remaining trades; they've
-    // already gone out with the original direction/stake. Sequential mode fires one
-    // trade, awaits its full settlement (via trackContract's callback), THEN decides
-    // whether to flip/stop before firing the next — which is the only way Auto Flip
-    // or Stop Win can actually behave as intended.
-    const executeBulkTrades = useCallback((
-        mode: TradeExecutionMode,
-        count: number,
-        staticParams: { symbol: string; duration: number },
-        getDynamicParams: () => { contract_type: string; prediction?: number; amount: number },
-        onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void,
-        onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void,
-        sequential: boolean = false,
-        onBatchComplete?: () => void
-    ): (() => void) => {
-        if (!api_base.api || !api_base.is_authorized) {
-            console.error('[BulkTrader] Cannot trade — not connected/authorized to a Deriv account.');
-            onTradeResult?.({ index: -1, success: false, error: 'Not connected to your Deriv account.' });
-            return () => {};
+          }
+          onBatchComplete?.();
+        })();
+      } else {
+        let completedCount = 0;
+        for (let i = 0; i < count; i++) {
+          const id = setTimeout(async () => {
+            await fireOneTrade(i);
+            completedCount += 1;
+            if (completedCount === count) onBatchComplete?.();
+          }, i * delay);
+          timeoutIds.push(id);
         }
+      }
 
-        // Multi-account safety net: remember which account this run started on. If
-        // the user switches accounts mid-run (index.tsx also stops the run on switch,
-        // but there's an unavoidable small race for a trade already in flight when the
-        // switch happens), any trade that would fire under a different account is
-        // skipped instead of being silently placed on the wrong account.
-        const loginIdAtStart = (api_base.account_info as any)?.loginid;
+      return () => {
+        cancelled = true;
+        timeoutIds.forEach((id) => clearTimeout(id));
+      };
+    },
+    [trackContract, journal]
+  );
 
-        const delay = mode === 'FAST' ? 50 : 300;
-        let cancelled = false;
-
-        // Some errors mean every remaining trade in this batch will fail the exact
-        // same way — e.g. a daily turnover limit, once hit, doesn't reset mid-batch.
-        // Continuing to fire the rest of the batch in that case just wastes time and
-        // hammers the API with guaranteed failures. Detected by message/code text
-        // since Deriv doesn't give us a clean single error-code enum to check against
-        // here — this is a best-effort match on the known phrasing for these cases.
-        const isFatalAccountError = (error: any): boolean => {
-            const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
-            return (
-                text.includes('turnover limit') ||
-                text.includes('daily limit') ||
-                text.includes('trading limit') ||
-                text.includes('insufficient balance') ||
-                text.includes('self-exclusion') ||
-                text.includes('self exclusion') ||
-                text.includes('exceed your')
-            );
-        };
-
-        const fireOneTrade = async (i: number): Promise<void> => {
-            if (cancelled) return;
-
-            const currentLoginId = (api_base.account_info as any)?.loginid;
-            if (currentLoginId !== loginIdAtStart) {
-                console.warn('[BulkTrader] Skipping trade — active account changed since this run started.');
-                onTradeResult?.({ index: i, success: false, error: 'Account changed — trade skipped for safety.' });
-                return;
-            }
-
-            try {
-                const dynamic = getDynamicParams();
-
-                // Deriv direct proposal + buy request payload.
-                // IMPORTANT: the API expects "underlying_symbol" in parameters, not
-                // "symbol" — using the wrong key here causes every buy to be silently
-                // rejected (confirmed against the working Purchase.js -> tradeOptionToBuy
-                // helper used by the rest of this app).
-                const req: any = {
-                    buy: '1',
-                    price: dynamic.amount,
-                    parameters: {
-                        amount: dynamic.amount,
-                        basis: 'stake',
-                        contract_type: dynamic.contract_type,
-                        currency: 'USD',
-                        duration: staticParams.duration,
-                        duration_unit: 't',
-                        underlying_symbol: staticParams.symbol,
-                    }
-                };
-
-                if (dynamic.prediction !== undefined) {
-                    req.parameters.barrier = String(dynamic.prediction);
-                }
-
-                console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
-                const response: any = await api_base.api.send(req);
-                console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
-
-                if (cancelled) return;
-
-                if (response?.error) {
-                    // Surface the real Deriv error (message + code) instead of a
-                    // generic fallback string, so failures are actually diagnosable.
-                    const fatal = isFatalAccountError(response.error);
-                    const baseMsg =
-                        response.error.message ||
-                        `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
-                    const errMsg = fatal ? `${baseMsg} — stopping remaining trades in this batch` : baseMsg;
-                    onTradeResult?.({ index: i, success: false, error: errMsg });
-
-                    if (fatal) {
-                        cancelled = true;
-                    }
-                } else {
-                    if (response?.buy?.contract_id) {
-                        journal.onLogSuccess({
-                            log_type: LogTypes.PURCHASE,
-                            extra: { transaction_id: response.buy.transaction_id } as any,
-                        });
-
-                        if (sequential) {
-                            // Wait for this contract to fully settle before returning,
-                            // so the caller's for-loop below only proceeds to the next
-                            // trade once Auto Flip/Stop Win have had a chance to react.
-                            await new Promise<void>((resolve) => {
-                                trackContract(response.buy.contract_id, dynamic.contract_type, (settled) => {
-                                    onContractSettled?.(settled);
-                                    resolve();
-                                });
-                            });
-                        } else {
-                            trackContract(response.buy.contract_id, dynamic.contract_type, onContractSettled);
-                        }
-                    }
-                    onTradeResult?.({ index: i, success: true });
-                }
-            } catch (err: any) {
-                console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
-                onTradeResult?.({ index: i, success: false, error: err?.message || 'Trade failed (network/unknown error)' });
-            }
-        };
-
-        const timeoutIds: ReturnType<typeof setTimeout>[] = [];
-
-        if (sequential) {
-            (async () => {
-                for (let i = 0; i < count; i++) {
-                    if (cancelled) break;
-                    await fireOneTrade(i);
-                    if (cancelled) break;
-                    if (i < count - 1) {
-                        await new Promise((resolve) => setTimeout(resolve, delay));
-                    }
-                }
-                // Always fire, whether the batch finished normally or stopped early
-                // (manual stop, Stop Win, or a fatal account error above) — otherwise
-                // the UI would stay stuck showing "running" until the safety timeout.
-                onBatchComplete?.();
-            })();
-        } else {
-            let completedCount = 0;
-            for (let i = 0; i < count; i++) {
-                const id = setTimeout(async () => {
-                    await fireOneTrade(i);
-                    completedCount += 1;
-                    if (completedCount === count) onBatchComplete?.();
-                }, i * delay);
-                timeoutIds.push(id);
-            }
-        }
-
-        // Cancel function — stops any not-yet-fired trades in this batch. Used for
-        // both manual Stop and Stop Win (which needs to halt remaining trades the
-        // instant the session turns profitable — and with sequential mode, this now
-        // actually works, since the loop checks `cancelled` before firing each trade).
-        return () => {
-            cancelled = true;
-            timeoutIds.forEach((id) => clearTimeout(id));
-        };
-    }, [trackContract, journal]);
-
-    return {
-        isConnected,
-        isAuthorized,
-        accountInfo,
-        tickSequence,
-        subscribeTicks,
-        executeBulkTrades
-    };
+  return {
+    isConnected,
+    isAuthorized,
+    accountInfo,
+    tickSequence,
+    subscribeTicks,
+    executeBulkTrades,
+  };
 };
