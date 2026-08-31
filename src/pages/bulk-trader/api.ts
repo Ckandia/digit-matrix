@@ -1,5 +1,5 @@
 // src/pages/bulk-trader/api.ts
-const API_URL = 'https://digit-matrix-backend.onrender.com'; // Update this if your Render URL changed
+const API_URL = 'https://digit-matrix-backend.onrender.com'; // Change this if your Render URL is different
 
 export interface BackendTick {
     quote: number;
