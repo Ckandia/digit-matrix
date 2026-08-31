@@ -3,7 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
-import { fetchAnalysis, logTradeToBackend, sendTickToBackend } from './api';
+import { fetchAnalysis, fetchRecentTicks, logTradeToBackend, sendTickToBackend } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
@@ -32,6 +32,7 @@ const BulkTrader = () => {
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
     const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
+    const [backendStatus, setBackendStatus] = useState<string>('Waiting for backend data...');
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
@@ -51,6 +52,7 @@ const BulkTrader = () => {
     const [isEnterNow, setIsEnterNow] = useState<boolean>(false);
     const tickSequenceRef = useRef<TickData[]>([]);
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const backendTicksRef = useRef<any[]>([]);
 
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
@@ -70,13 +72,36 @@ const BulkTrader = () => {
         const symbol = MARKET_MAPPING[market];
         if (!symbol) return;
 
+        backendTicksRef.current = [];
+
         const load = async () => {
-            const data = await fetchAnalysis(symbol);
-            if (data && !data.error) setBackendAnalysis(data);
+            const ticks = await fetchRecentTicks(symbol, 20);
+            if (ticks && Array.isArray(ticks)) {
+                backendTicksRef.current = ticks;
+            }
         };
 
         load();
-        const interval = setInterval(load, 10000);
+        const interval = setInterval(load, 2000);
+        return () => clearInterval(interval);
+    }, [market]);
+
+    useEffect(() => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) return;
+
+        const load = async () => {
+            const data = await fetchAnalysis(symbol);
+            if (data && !data.error) {
+                setBackendAnalysis(data);
+                setBackendStatus(`${data.lookback || 0} ticks loaded`);
+            } else {
+                setBackendStatus('Collecting...');
+            }
+        };
+
+        load();
+        const interval = setInterval(load, 5000);
         return () => clearInterval(interval);
     }, [market]);
 
@@ -100,10 +125,26 @@ const BulkTrader = () => {
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
         setIsEnterNow(false);
 
+        const getTicksForSignal = () => {
+            if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                return backendTicksRef.current.map((t: any) => ({
+                    quote: t.quote,
+                    digit: t.digit,
+                    symbol: MARKET_MAPPING[market],
+                    epoch: Date.now() / 1000,
+                }));
+            }
+            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                return tickSequenceRef.current;
+            }
+            return [];
+        };
+
         let hasSignal = false;
         const tryComputeInitial = () => {
-            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+            const ticks = getTicksForSignal();
+            if (ticks.length >= MIN_TICKS_FOR_SIGNAL) {
+                applySignal(computeSignal(strategy, ticks, predictionRef.current, duration));
                 return true;
             }
             return false;
@@ -117,12 +158,18 @@ const BulkTrader = () => {
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
-                    applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                    const ticks = getTicksForSignal();
+                    if (ticks.length >= MIN_TICKS_FOR_SIGNAL) {
+                        applySignal(computeSignal(strategy, ticks, predictionRef.current, duration));
+                    }
                     setIsEnterNow(true);
 
                     if (enterNowRefreshRef.current) clearInterval(enterNowRefreshRef.current);
                     enterNowRefreshRef.current = setInterval(() => {
-                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                        const refreshTicks = getTicksForSignal();
+                        if (refreshTicks.length >= MIN_TICKS_FOR_SIGNAL) {
+                            applySignal(computeSignal(strategy, refreshTicks, predictionRef.current, duration));
+                        }
                     }, 500);
 
                     setTimeout(() => {
@@ -374,7 +421,7 @@ const BulkTrader = () => {
                 )}
             </div>
 
-            {backendAnalysis && (
+            {backendAnalysis ? (
                 <div className="signal-card" style={{ borderColor: '#a855f7' }}>
                     <div className="signal-info">
                         <span className="signal-label">1000-TICK BACKEND ANALYSIS</span>
@@ -387,6 +434,15 @@ const BulkTrader = () => {
                         </span>
                         <span className="signal-split" style={{ fontSize: '10px', marginTop: '4px' }}>
                             Last 20: {backendAnalysis.last_20_digits?.join(' ')}
+                        </span>
+                    </div>
+                </div>
+            ) : (
+                <div className="signal-card" style={{ borderColor: '#64748b' }}>
+                    <div className="signal-info">
+                        <span className="signal-label">BACKEND STATUS</span>
+                        <span className="signal-value" style={{ color: '#94a3b8' }}>
+                            {backendStatus}
                         </span>
                     </div>
                 </div>
