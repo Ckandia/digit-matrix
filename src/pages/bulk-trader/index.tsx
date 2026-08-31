@@ -3,6 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
+import { fetchAnalysis, fetchRecentTicks, logTradeToBackend, sendTickToBackend } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right' | 'Both';
@@ -30,6 +31,9 @@ const BulkTrader = () => {
     const [riskPercent, setRiskPercent] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
+    const [backendAnalysis, setBackendAnalysis] = useState<any>(null);
+    const [backendStatus, setBackendStatus] = useState<string>('Waiting for backend data...');
+
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
     const directionRef = useRef<string>('');
@@ -48,12 +52,58 @@ const BulkTrader = () => {
     const [isEnterNow, setIsEnterNow] = useState<boolean>(false);
     const tickSequenceRef = useRef<TickData[]>([]);
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const backendTicksRef = useRef<any[]>([]);
 
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
             subscribeTicks(MARKET_MAPPING[market]);
         }
     }, [isConnected, market, subscribeTicks]);
+
+    useEffect(() => {
+        if (tickSequence.length === 0) return;
+        const latest = tickSequence[tickSequence.length - 1];
+        if (latest && latest.quote && latest.symbol) {
+            sendTickToBackend(latest.symbol, latest.quote);
+        }
+    }, [tickSequence]);
+
+    useEffect(() => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) return;
+
+        backendTicksRef.current = [];
+
+        const load = async () => {
+            const ticks = await fetchRecentTicks(symbol, 20);
+            if (ticks && Array.isArray(ticks)) {
+                backendTicksRef.current = ticks;
+            }
+        };
+
+        load();
+        const interval = setInterval(load, 2000);
+        return () => clearInterval(interval);
+    }, [market]);
+
+    useEffect(() => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) return;
+
+        const load = async () => {
+            const data = await fetchAnalysis(symbol);
+            if (data && !data.error) {
+                setBackendAnalysis(data);
+                setBackendStatus(`${data.lookback || 0} ticks loaded`);
+            } else {
+                setBackendStatus('Collecting...');
+            }
+        };
+
+        load();
+        const interval = setInterval(load, 5000);
+        return () => clearInterval(interval);
+    }, [market]);
 
     useEffect(() => {
         tickSequenceRef.current = tickSequence;
@@ -75,10 +125,26 @@ const BulkTrader = () => {
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
         setIsEnterNow(false);
 
+        const getTicksForSignal = () => {
+            if (backendTicksRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                return backendTicksRef.current.map((t: any) => ({
+                    quote: t.quote,
+                    digit: t.digit,
+                    symbol: MARKET_MAPPING[market],
+                    epoch: Date.now() / 1000,
+                }));
+            }
+            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
+                return tickSequenceRef.current;
+            }
+            return [];
+        };
+
         let hasSignal = false;
         const tryComputeInitial = () => {
-            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+            const ticks = getTicksForSignal();
+            if (ticks.length >= MIN_TICKS_FOR_SIGNAL) {
+                applySignal(computeSignal(strategy, ticks, predictionRef.current, duration));
                 return true;
             }
             return false;
@@ -92,12 +158,18 @@ const BulkTrader = () => {
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
-                    applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                    const ticks = getTicksForSignal();
+                    if (ticks.length >= MIN_TICKS_FOR_SIGNAL) {
+                        applySignal(computeSignal(strategy, ticks, predictionRef.current, duration));
+                    }
                     setIsEnterNow(true);
 
                     if (enterNowRefreshRef.current) clearInterval(enterNowRefreshRef.current);
                     enterNowRefreshRef.current = setInterval(() => {
-                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                        const refreshTicks = getTicksForSignal();
+                        if (refreshTicks.length >= MIN_TICKS_FOR_SIGNAL) {
+                            applySignal(computeSignal(strategy, refreshTicks, predictionRef.current, duration));
+                        }
                     }, 500);
 
                     setTimeout(() => {
@@ -185,6 +257,17 @@ const BulkTrader = () => {
         const onContractSettled = (settled: { contract_type: string; profit: number; won: boolean }) => {
             cumulativeProfitRef.current += settled.profit;
             peakProfitRef.current = Math.max(peakProfitRef.current, cumulativeProfitRef.current);
+
+            logTradeToBackend({
+                loginid: accountInfo?.loginid,
+                market: MARKET_MAPPING[market],
+                strategy: strategy,
+                contract_type: settled.contract_type,
+                stake: runStakeRef.current,
+                prediction: requiresPrediction ? runPredictionRef.current : undefined,
+                profit: settled.profit,
+                result: settled.won ? 'win' : 'loss',
+            });
 
             if (stopWinEnabled && cumulativeProfitRef.current > 0) {
                 stopLoop();
@@ -337,6 +420,24 @@ const BulkTrader = () => {
                     <span>Not connected to Deriv. Please log in to trade.</span>
                 )}
             </div>
+
+            {backendAnalysis && (
+                <div className="signal-card" style={{ borderColor: '#a855f7' }}>
+                    <div className="signal-info">
+                        <span className="signal-label">1000-TICK BACKEND ANALYSIS</span>
+                        <span className="signal-value" style={{ color: '#a855f7' }}>
+                            Hot: {backendAnalysis.hot_digit} ({backendAnalysis.hot_pct}%) · Cold: {backendAnalysis.cold_digit} ({backendAnalysis.cold_pct}%)
+                        </span>
+                        <span className="signal-split">
+                            Even {backendAnalysis.even_odd?.even_pct ?? 0}% · Odd {100 - (backendAnalysis.even_odd?.even_pct ?? 0)}% · 
+                            Max Streak: {backendAnalysis.max_streak?.digit}×{backendAnalysis.max_streak?.length}
+                        </span>
+                        <span className="signal-split" style={{ fontSize: '10px', marginTop: '4px' }}>
+                            Last 20: {backendAnalysis.last_20_digits?.join(' ')}
+                        </span>
+                    </div>
+                </div>
+            )}
 
             {signal ? (
                 <div className={`signal-card ${isEnterNow && !signal.noTrade ? 'enter-now' : ''} ${signal.noTrade ? 'no-trade' : ''}`}>
@@ -545,64 +646,80 @@ const BulkTrader = () => {
                             )}
                         </div>
                     )}
+                </div>
 
-                    <div className="form-row">
-                        <div className="form-group">
-                            <label>EXECUTION MODE</label>
-                            <select 
-                                value={executionMode} 
-                                disabled={formDisabled} 
-                                onChange={(e) => setExecutionMode(e.target.value as TradeExecutionMode)}
-                            >
-                                <option value="FAST">FAST</option>
-                                <option value="SEQUENTIAL">SEQUENTIAL</option>
-                            </select>
-                        </div>
-                    </div>
+                <div className="visualizer-card">
+                    <DigitDisplay ticks={tickSequence} mode={digitDisplayMode} />
+                </div>
+            </div>
 
-                    <div className="action-buttons">
-                        <button
-                            className={`action-btn left ${runningButton === 'Left' ? 'active' : ''}`}
-                            disabled={!canTrade || (!!runningButton && runningButton !== 'Left')}
+            <div className="action-pad-card">
+                {bothSidesEnabled ? (
+                    <button
+                        className={`btn-action-both ${runningButton === 'Both' ? 'running' : ''}`}
+                        onClick={() => handleToggle('Both')}
+                        disabled={!canTrade || (formDisabled && runningButton !== 'Both')}
+                    >
+                        {runningButton === 'Both' ? 'Stop' : `Bulk ${pair.left.label} + ${pair.right.label}`}
+                    </button>
+                ) : (
+                    <>
+                        <button 
+                            className={`btn-action-left ${runningButton === 'Left' ? 'running' : ''} ${!runningButton && signal?.side === 'left' && !signal?.noTrade ? 'signal-match' : ''}`}
                             onClick={() => handleToggle('Left')}
+                            disabled={!canTrade || (formDisabled && runningButton !== 'Left')}
                         >
-                            {pair.left.label}
+                            <span className="icon">{runningButton === 'Left' ? '■' : '⧈'}</span>
+                            {runningButton === 'Left' ? 'Stop' : `Bulk ${pair.left.label}`}
                         </button>
-                        <button
-                            className={`action-btn ai ${runningButton === 'AI' ? 'active' : ''}`}
-                            disabled={!canTrade || (!!runningButton && runningButton !== 'AI')}
+                        <button 
+                            className={`btn-action-ai ${runningButton === 'AI' ? 'running' : ''}`}
                             onClick={() => handleToggle('AI')}
+                            disabled={!canTrade || (formDisabled && runningButton !== 'AI')}
                         >
-                            AI
+                            {runningButton === 'AI' ? 'Stop' : `AI: ${strategy}`}
                         </button>
-                        <button
-                            className={`action-btn right ${runningButton === 'Right' ? 'active' : ''}`}
-                            disabled={!canTrade || (!!runningButton && runningButton !== 'Right')}
+                        <button 
+                            className={`btn-action-right ${runningButton === 'Right' ? 'running' : ''} ${!runningButton && signal?.side === 'right' && !signal?.noTrade ? 'signal-match' : ''}`}
                             onClick={() => handleToggle('Right')}
+                            disabled={!canTrade || (formDisabled && runningButton !== 'Right')}
                         >
-                            {pair.right.label}
+                            <span className="icon">{runningButton === 'Right' ? '■' : '▲'}</span>
+                            {runningButton === 'Right' ? 'Stop' : `Bulk ${pair.right.label}`}
                         </button>
-                        <button
-                            className={`action-btn both ${runningButton === 'Both' ? 'active' : ''}`}
-                            disabled={!canTrade || (!!runningButton && runningButton !== 'Both')}
-                            onClick={() => handleToggle('Both')}
-                        >
-                            Both
-                        </button>
-                    </div>
+                    </>
+                )}
+            </div>
 
-                    <DigitDisplay mode={digitDisplayMode} ticks={tickSequence} lockedPrediction={lockedPrediction} />
-
-                    {lastError && (
-                        <div className="error-banner">
-                            {lastError}
-                        </div>
+            <div className="footer-control-bar">
+                <div className="status-pill">
+                    {runningButton ? (
+                        <span>
+                            Running <strong>
+                                {runningButton === 'Left' ? pair.left.label
+                                    : runningButton === 'Right' ? pair.right.label
+                                    : runningButton === 'Both' ? `${pair.left.label} + ${pair.right.label}`
+                                    : `AI (${strategy})`}
+                                {lockedPrediction !== null ? ` · Digit ${lockedPrediction}` : ''}
+                            </strong> · {tradesFired}/{runningButton === 'Both' ? bulkCount * 2 : bulkCount} trade{bulkCount === 1 && runningButton !== 'Both' ? '' : 's'} fired
+                            {(autoFlipEnabled || stopWinEnabled) && ' · sequential (waiting for each result)'}
+                        </span>
+                    ) : (
+                        <span>Idle</span>
                     )}
-
-                    <div className="status-bar">
-                        <span>Trades Fired: {tradesFired}</span>
-                        {runningButton && <span className="running-indicator">Running: {runningButton}</span>}
-                    </div>
+                </div>
+                {lastError && <div className="error-pill">{lastError}</div>}
+                <div className="execution-pill">
+                    <span>Execution <strong>{executionMode}</strong></span>
+                    <label className="switch">
+                        <input 
+                            type="checkbox" 
+                            checked={executionMode === 'FAST'}
+                            disabled={formDisabled}
+                            onChange={(e) => setExecutionMode(e.target.checked ? 'FAST' : 'SLOW')}
+                        />
+                        <span className="slider"></span>
+                    </label>
                 </div>
             </div>
         </div>
