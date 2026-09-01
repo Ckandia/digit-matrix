@@ -11,7 +11,7 @@ const SIGNAL_CYCLE_SECONDS = 20;
 const ENTER_NOW_DISPLAY_MS = 3000;
 const MIN_TICKS_FOR_SIGNAL = 20;
 
-const BulkTrader = () => {
+const App = () => {
     const [market, setMarket] = useState<string>('Vol 10 (1s)');
     const [strategy, setStrategy] = useState<string>('Even');
     const [stake, setStake] = useState<number>(0.5);
@@ -28,7 +28,8 @@ const BulkTrader = () => {
     const [maxStake, setMaxStake] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
 
-    const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
+    // Defensive fallback: Default tickSequence to empty array if hook returns undefined
+    const { isConnected, isAuthorized, accountInfo, tickSequence = [], subscribeTicks, executeBulkTrades } = useBulkTrader();
 
     const directionRef = useRef<string>('');
     const cumulativeProfitRef = useRef<number>(0);
@@ -51,14 +52,16 @@ const BulkTrader = () => {
         }
     }, [isConnected, market, subscribeTicks]);
 
+    // Keep ref continuously synchronized with array safety check
     useEffect(() => {
-        tickSequenceRef.current = tickSequence;
+        tickSequenceRef.current = Array.isArray(tickSequence) ? tickSequence : [];
     }, [tickSequence]);
 
     useEffect(() => {
-        if (tickSequence.length === 0) return;
-        const latest = tickSequence[tickSequence.length - 1];
-        if (latest && latest.quote && latest.symbol) {
+        const safeTicks = Array.isArray(tickSequence) ? tickSequence : [];
+        if (safeTicks.length === 0) return;
+        const latest = safeTicks[safeTicks.length - 1];
+        if (latest && latest.quote !== undefined && latest.symbol) {
             sendTickToBackend(latest.symbol, latest.quote);
         }
     }, [tickSequence]);
@@ -81,8 +84,9 @@ const BulkTrader = () => {
 
         let hasSignal = false;
         const tryComputeInitial = () => {
-            if (tickSequenceRef.current.length >= MIN_TICKS_FOR_SIGNAL) {
-                applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+            const currentTicks = Array.isArray(tickSequenceRef.current) ? tickSequenceRef.current : [];
+            if (currentTicks.length >= MIN_TICKS_FOR_SIGNAL) {
+                applySignal(computeSignal(strategy, currentTicks, predictionRef.current, duration));
                 return true;
             }
             return false;
@@ -96,12 +100,14 @@ const BulkTrader = () => {
             }
             setSignalCountdown((prev) => {
                 if (prev <= 1) {
-                    applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                    const currentTicks = Array.isArray(tickSequenceRef.current) ? tickSequenceRef.current : [];
+                    applySignal(computeSignal(strategy, currentTicks, predictionRef.current, duration));
                     setIsEnterNow(true);
 
                     if (enterNowRefreshRef.current) clearInterval(enterNowRefreshRef.current);
                     enterNowRefreshRef.current = setInterval(() => {
-                        applySignal(computeSignal(strategy, tickSequenceRef.current, predictionRef.current, duration));
+                        const ticks = Array.isArray(tickSequenceRef.current) ? tickSequenceRef.current : [];
+                        applySignal(computeSignal(strategy, ticks, predictionRef.current, duration));
                     }, 500);
 
                     setTimeout(() => {
@@ -128,7 +134,6 @@ const BulkTrader = () => {
     }, [strategy, market, duration, applySignal]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
-
     const durationConstraint = DURATION_CONSTRAINTS[strategy] ?? DEFAULT_DURATION_CONSTRAINT;
 
     useEffect(() => {
@@ -256,7 +261,7 @@ const BulkTrader = () => {
         }, safetyMs);
 
         setRunningButton(button);
-    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo, logTradeToBackend]);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo]);
 
     const handleToggle = (button: ActionButton) => {
         if (!canTrade) return;
@@ -454,7 +459,7 @@ const BulkTrader = () => {
                 </div>
 
                 <div className="visualizer-card">
-                    <DigitDisplay ticks={tickSequence} mode={digitDisplayMode} />
+                    <DigitDisplay ticks={Array.isArray(tickSequence) ? tickSequence : []} mode={digitDisplayMode} />
                 </div>
             </div>
 
@@ -516,4 +521,4 @@ const BulkTrader = () => {
     );
 };
 
-export default BulkTrader;
+export default App;
