@@ -1,5 +1,6 @@
 /* eslint-disable no-confusing-arrow */
 import { Map } from 'immutable';
+import { backendAPI } from '@/services/backend-api';
 import { getLast, historyToTicks } from '../../utils/binary-utils';
 import { observer as globalObserver } from '../../utils/observer';
 import { doUntilDone, getUUID } from '../tradeEngine/utils/helpers';
@@ -204,6 +205,8 @@ export default class TicksService {
                     if (this.ticks.has(symbol)) {
                         this.subscriptions = this.subscriptions.setIn(['tick', symbol], id);
                         this.updateTicksAndCallListeners(symbol, updateTicks(this.ticks.get(symbol), parseTick(tick)));
+                        // 👇 FORWARD TICK TO YOUR BACK-END DATABASE
+                        backendAPI.sendTick(symbol, +tick.quote);
                     }
                 }
 
