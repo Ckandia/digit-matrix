@@ -15,18 +15,117 @@ export const useBulkTrader = () => {
 
     const wsRef = useRef<WebSocket | null>(null);
     const tickSequenceRef = useRef<TickData[]>([]);
+    const subscribedSymbolRef = useRef<string | null>(null);
 
-    // Always keep ref and state in sync and fallback to []
     const safeSetTicks = useCallback((ticks: TickData[]) => {
         const validTicks = Array.isArray(ticks) ? ticks : [];
         tickSequenceRef.current = validTicks;
         setTickSequence(validTicks);
     }, []);
 
+    // 1. Initialize and maintain persistent WebSocket connection
+    useEffect(() => {
+        const app_id = 1089; // Default Deriv App ID
+        const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${app_id}`;
+
+        if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
+
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+            setIsConnected(true);
+            
+            // Check for existing token or session storage if present
+            const token = localStorage.getItem('config.account1') || localStorage.getItem('token');
+            if (token) {
+                try {
+                    const parsed = JSON.parse(token);
+                    const authToken = parsed.token || token;
+                    ws.send(JSON.stringify({ authorize: authToken }));
+                } catch {
+                    ws.send(JSON.stringify({ authorize: token }));
+                }
+            }
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+
+                if (data.msg_type === 'authorize') {
+                    if (data.authorize) {
+                        setIsAuthorized(true);
+                        setAccountInfo({
+                            loginid: data.authorize.loginid,
+                            balance: Number(data.authorize.balance || 0),
+                            currency: data.authorize.currency || 'USD',
+                        });
+                    } else {
+                        setIsAuthorized(false);
+                    }
+                }
+
+                if (data.msg_type === 'history') {
+                    const historyPrices = data.history?.prices || [];
+                    const historyTimes = data.history?.times || [];
+                    
+                    const formattedTicks: TickData[] = historyPrices.map((price: number, idx: number) => ({
+                        quote: price,
+                        epoch: historyTimes[idx] || Date.now(),
+                        symbol: data.echo_req?.ticks_history || '',
+                    }));
+
+                    safeSetTicks(formattedTicks);
+                } else if (data.msg_type === 'tick') {
+                    const newTick: TickData = {
+                        quote: data.tick?.quote,
+                        epoch: data.tick?.epoch,
+                        symbol: data.tick?.symbol,
+                    };
+
+                    if (newTick.quote !== undefined) {
+                        const currentTicks = tickSequenceRef.current || [];
+                        const updated = [...currentTicks.slice(-49), newTick];
+                        safeSetTicks(updated);
+                    }
+                }
+            } catch (err) {
+                console.error('[DerivAPI] Parse Error:', err);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('[DerivAPI] WebSocket Error:', error);
+        };
+
+        ws.onclose = () => {
+            setIsConnected(false);
+            setIsAuthorized(false);
+            wsRef.current = null;
+        };
+
+        return () => {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.close();
+                wsRef.current = null;
+            }
+        };
+    }, [safeSetTicks]);
+
+    // 2. Safe symbol subscription
     const subscribeTicks = useCallback((symbol: string) => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (subscribedSymbolRef.current === symbol) return;
 
-        // Reset ticks safely on symbol change
+        // Forget previous tick stream if subscribed
+        if (subscribedSymbolRef.current) {
+            wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
+        }
+
+        subscribedSymbolRef.current = symbol;
         safeSetTicks([]);
 
         wsRef.current.send(
@@ -41,48 +140,7 @@ export const useBulkTrader = () => {
         );
     }, [safeSetTicks]);
 
-    const handleMessage = useCallback((event: MessageEvent) => {
-        try {
-            const data = JSON.parse(event.data);
-
-            if (data.msg_type === 'history') {
-                const historyPrices = data.history?.prices || [];
-                const historyTimes = data.history?.times || [];
-                
-                const formattedTicks: TickData[] = historyPrices.map((price: number, idx: number) => ({
-                    quote: price,
-                    epoch: historyTimes[idx] || Date.now(),
-                    symbol: data.echo_req?.ticks_history || '',
-                }));
-
-                safeSetTicks(formattedTicks);
-            } else if (data.msg_type === 'tick') {
-                const newTick: TickData = {
-                    quote: data.tick?.quote,
-                    epoch: data.tick?.epoch,
-                    symbol: data.tick?.symbol,
-                };
-
-                if (newTick.quote !== undefined) {
-                    const currentTicks = tickSequenceRef.current || [];
-                    const updated = [...currentTicks.slice(-49), newTick];
-                    safeSetTicks(updated);
-                }
-            } else if (data.msg_type === 'authorize') {
-                if (data.authorize) {
-                    setIsAuthorized(true);
-                    setAccountInfo({
-                        loginid: data.authorize.loginid,
-                        balance: Number(data.authorize.balance || 0),
-                        currency: data.authorize.currency || 'USD',
-                    });
-                }
-            }
-        } catch (err) {
-            console.error('[DerivAPI] Error parsing WebSocket message:', err);
-        }
-    }, [safeSetTicks]);
-
+    // 3. Trade execution handler
     const executeBulkTrades = useCallback(
         (
             mode: TradeExecutionMode,
@@ -97,18 +155,28 @@ export const useBulkTrader = () => {
             let isCancelled = false;
 
             const executeSingle = async () => {
-                if (isCancelled) return;
+                if (isCancelled || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
                 const dynamic = getDynamicParams();
-                
-                // Example simulation / execution call payload
+                const proposalReq = {
+                    proposal: 1,
+                    amount: dynamic.amount,
+                    basis: 'stake',
+                    currency: accountInfo?.currency || 'USD',
+                    symbol: params.symbol,
+                    duration: params.duration,
+                    duration_unit: 't',
+                    contract_type: dynamic.contract_type,
+                    barrier: dynamic.prediction !== undefined ? `${dynamic.prediction}` : undefined,
+                };
+
+                wsRef.current.send(JSON.stringify(proposalReq));
                 onTradeComplete({ success: true });
             };
 
             if (isSequential) {
-                // Handle sequential execution logic
                 executeSingle();
             } else {
-                // Burst execution logic
                 for (let i = 0; i < count; i++) {
                     executeSingle();
                 }
@@ -119,14 +187,14 @@ export const useBulkTrader = () => {
                 onAllFinished();
             };
         },
-        []
+        [accountInfo?.currency]
     );
 
     return {
         isConnected,
         isAuthorized,
         accountInfo,
-        tickSequence: tickSequence || [], // Defensive fallback guarantee
+        tickSequence: tickSequence || [],
         subscribeTicks,
         executeBulkTrades,
     };
