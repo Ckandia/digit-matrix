@@ -1,251 +1,352 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { TickData, TradeExecutionMode, TradeResult } from './types';
+import { api_base } from '@/external/bot-skeleton/services/api/api-base';
+import { LogTypes } from '@/external/bot-skeleton';
+import { useStore } from '@/hooks/useStore';
+import { TickData, TradeExecutionMode } from './types';
 
-export interface AccountInfo {
-    loginid: string;
-    balance: number;
-    currency: string;
+export interface BulkTraderAccountInfo {
+  loginid?: string;
+  currency?: string;
+  balance?: number;
 }
 
-// Helper to convert human UI names to Deriv API symbol codes
-const getDerivSymbol = (sym: string) => {
-    if (sym.includes('Vol 10 (1s)')) return '1HZ10V';
-    if (sym.includes('Vol 10') && !sym.includes('1s')) return 'R_10';
-    if (sym.includes('Vol 25 (1s)')) return '1HZ25V';
-    if (sym.includes('Vol 25') && !sym.includes('1s')) return 'R_25';
-    if (sym.includes('Vol 50 (1s)')) return '1HZ50V';
-    if (sym.includes('Vol 50') && !sym.includes('1s')) return 'R_50';
-    if (sym.includes('Vol 75 (1s)')) return '1HZ75V';
-    if (sym.includes('Vol 75') && !sym.includes('1s')) return 'R_75';
-    if (sym.includes('Vol 100 (1s)')) return '1HZ100V';
-    if (sym.includes('Vol 100') && !sym.includes('1s')) return 'R_100';
-    if (sym.includes('Jump 100')) return 'JD100';
-    if (sym.includes('Jump 75')) return 'JD75';
-    if (sym.includes('Jump 50')) return 'JD50';
-    if (sym.includes('Jump 25')) return 'JD25';
-    if (sym.includes('Jump 10')) return 'JD10';
-    return sym; // Fallback to whatever was passed
-};
-
 export const useBulkTrader = () => {
-    const [isConnected, setIsConnected] = useState<boolean>(false);
-    const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
-    const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
-    const [tickSequence, setTickSequence] = useState<TickData[]>([]);
+  const { transactions, journal, summary_card } = useStore();
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
+  const [accountInfo, setAccountInfo] = useState<BulkTraderAccountInfo | null>(null);
+  const [tickSequence, setTickSequence] = useState<TickData[]>([]);
 
-    const wsRef = useRef<WebSocket | null>(null);
-    const tickSequenceRef = useRef<TickData[]>([]);
-    const subscribedSymbolRef = useRef<string | null>(null);
-    const pendingSymbolRef = useRef<string | null>(null); // FIX: Caches the symbol if WS isn't ready yet
-    const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const activeSymbolRef = useRef<string>('1HZ10V');
+  const subscriptionIdRef = useRef<string | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const retryCountRef = useRef<number>(0);
 
-    const safeSetTicks = useCallback((ticks: TickData[]) => {
-        const validTicks = Array.isArray(ticks) ? ticks : [];
-        tickSequenceRef.current = validTicks;
-        setTickSequence(validTicks);
-    }, []);
+  useEffect(() => {
+    const checkStatus = () => {
+      const hasConnection = !!api_base.api && api_base.api.connection?.readyState === WebSocket.OPEN;
+      const authorized = !!api_base.is_authorized;
 
-    // 2. Safe symbol subscription
-    const subscribeTicks = useCallback((symbol: string) => {
-        const actualSymbol = getDerivSymbol(symbol);
+      setIsConnected(hasConnection);
+      setIsAuthorized(authorized);
+      setAccountInfo(authorized ? (api_base.account_info as BulkTraderAccountInfo) : null);
 
-        // FIX: If socket is not open yet, save it and subscribe once it opens
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-            pendingSymbolRef.current = actualSymbol;
-            return;
+      // Handle automatic reconnection when WebSocket drops
+      if (!hasConnection && api_base.api) {
+        if (!reconnectTimeoutRef.current) {
+          const baseDelay = 1000;
+          const maxDelay = 30000;
+          const delay = Math.min(baseDelay * Math.pow(2, retryCountRef.current), maxDelay);
+
+          console.log(`[BulkTrader] Connection lost. Attempting reconnect in ${delay / 1000}s...`);
+          retryCountRef.current += 1;
+
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectTimeoutRef.current = null;
+            if (typeof (api_base as any).init === 'function') {
+              (api_base as any).init();
+            } else if (api_base.api?.connection) {
+              api_base.api.init();
+            }
+          }, delay);
         }
-
-        if (subscribedSymbolRef.current === actualSymbol) return;
-
-        // Forget previous tick stream if subscribed
-        if (subscribedSymbolRef.current) {
-            wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
+      } else if (hasConnection) {
+        // Reset retry counter upon successful connection restore
+        retryCountRef.current = 0;
+        if (reconnectTimeoutRef.current) {
+          clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = null;
         }
-
-        subscribedSymbolRef.current = actualSymbol;
-        pendingSymbolRef.current = null;
-        safeSetTicks([]);
-
-        wsRef.current.send(
-            JSON.stringify({
-                ticks_history: actualSymbol,
-                adjust_start_time: 1,
-                count: 50,
-                end: 'latest',
-                style: 'ticks',
-                subscribe: 1,
-            })
-        );
-    }, [safeSetTicks]);
-
-    // 1. Initialize and maintain persistent WebSocket connection
-    useEffect(() => {
-        const app_id = 1089; // Default Deriv App ID
-        const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${app_id}`;
-
-        if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
-            return;
-        }
-
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-            setIsConnected(true);
-            
-            // FIX: Keep-alive ping every 30 seconds to prevent silent disconnects
-            pingIntervalRef.current = setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ ping: 1 }));
-            }, 30000);
-
-            // FIX: Better Token Extraction (checks URL params first, then storage)
-            const urlParams = new URLSearchParams(window.location.search);
-            let token = urlParams.get('token1') || localStorage.getItem('config.account1') || localStorage.getItem('token');
-            
-            if (token) {
-                try {
-                    const parsed = JSON.parse(token);
-                    token = parsed.token || token;
-                } catch {
-                    // Token is just a plain string
-                }
-                ws.send(JSON.stringify({ authorize: token }));
-            }
-
-            // FIX: If UI requested ticks while connecting, fire it now
-            if (pendingSymbolRef.current) {
-                subscribeTicks(pendingSymbolRef.current);
-            }
-        };
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-
-                // FIX: Catch and log Deriv API errors so it's not failing silently
-                if (data.error) {
-                    console.error('[DerivAPI Error]:', data.error.message);
-                    return;
-                }
-
-                if (data.msg_type === 'authorize') {
-                    if (data.authorize) {
-                        setIsAuthorized(true);
-                        setAccountInfo({
-                            loginid: data.authorize.loginid,
-                            balance: Number(data.authorize.balance || 0),
-                            currency: data.authorize.currency || 'USD',
-                        });
-                    } else {
-                        setIsAuthorized(false);
-                    }
-                }
-
-                if (data.msg_type === 'history') {
-                    const historyPrices = data.history?.prices || [];
-                    const historyTimes = data.history?.times || [];
-                    
-                    const formattedTicks: TickData[] = historyPrices.map((price: number, idx: number) => ({
-                        quote: price,
-                        epoch: historyTimes[idx] || Date.now(),
-                        symbol: data.echo_req?.ticks_history || '',
-                    }));
-
-                    safeSetTicks(formattedTicks);
-                } else if (data.msg_type === 'tick') {
-                    const newTick: TickData = {
-                        quote: data.tick?.quote,
-                        epoch: data.tick?.epoch,
-                        symbol: data.tick?.symbol,
-                    };
-
-                    if (newTick.quote !== undefined) {
-                        const currentTicks = tickSequenceRef.current || [];
-                        const updated = [...currentTicks.slice(-49), newTick];
-                        safeSetTicks(updated);
-                    }
-                }
-            } catch (err) {
-                console.error('[DerivAPI] Parse Error:', err);
-            }
-        };
-
-        ws.onerror = (error) => {
-            console.error('[DerivAPI] WebSocket Error:', error);
-        };
-
-        ws.onclose = () => {
-            setIsConnected(false);
-            setIsAuthorized(false);
-            wsRef.current = null;
-            if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-        };
-
-        return () => {
-            if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                wsRef.current.close();
-                wsRef.current = null;
-            }
-        };
-    }, [safeSetTicks, subscribeTicks]);
-
-    // 3. Trade execution handler
-    const executeBulkTrades = useCallback(
-        (
-            mode: TradeExecutionMode,
-            count: number,
-            params: { symbol: string; duration: number },
-            getDynamicParams: () => { contract_type: string; prediction?: number; amount: number },
-            onTradeComplete: (result: { success: boolean; error?: string }) => void,
-            onTradeSettled: (settled: TradeResult) => void,
-            isSequential: boolean,
-            onAllFinished: () => void
-        ) => {
-            let isCancelled = false;
-
-            const executeSingle = async () => {
-                if (isCancelled || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-                const dynamic = getDynamicParams();
-                const proposalReq = {
-                    proposal: 1,
-                    amount: dynamic.amount,
-                    basis: 'stake',
-                    currency: accountInfo?.currency || 'USD',
-                    symbol: getDerivSymbol(params.symbol), // FIX: apply symbol mapping here too
-                    duration: params.duration,
-                    duration_unit: 't',
-                    contract_type: dynamic.contract_type,
-                    barrier: dynamic.prediction !== undefined ? `${dynamic.prediction}` : undefined,
-                };
-
-                wsRef.current.send(JSON.stringify(proposalReq));
-                onTradeComplete({ success: true });
-            };
-
-            if (isSequential) {
-                executeSingle();
-            } else {
-                for (let i = 0; i < count; i++) {
-                    executeSingle();
-                }
-            }
-
-            return () => {
-                isCancelled = true;
-                onAllFinished();
-            };
-        },
-        [accountInfo?.currency]
-    );
-
-    return {
-        isConnected,
-        isAuthorized,
-        accountInfo,
-        tickSequence: tickSequence || [],
-        subscribeTicks,
-        executeBulkTrades,
+      }
     };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 500);
+
+    return () => {
+      clearInterval(interval);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Re-subscribe to live ticks whenever connection restores or market symbol updates
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Auto resubscribe active symbol on socket reconnect
+    if (activeSymbolRef.current && api_base.api) {
+      api_base.api.send({
+        ticks: activeSymbolRef.current,
+        subscribe: 1,
+      }).catch((err: any) => {
+        console.error('[BulkTrader] Failed to re-subscribe ticks after reconnection:', err);
+      });
+    }
+
+    const subscription = api_base.api?.onMessage().subscribe(({ data }: any) => {
+      if (data?.msg_type === 'tick' && data.tick) {
+        if (data.tick.symbol === activeSymbolRef.current) {
+          if (data.subscription?.id) {
+            subscriptionIdRef.current = data.subscription.id;
+          }
+
+          const pipSizes = (api_base as any).pip_sizes as Record<string, number> | undefined;
+          const knownDecimals = pipSizes?.[data.tick.symbol];
+          const decimalPlaces =
+            typeof knownDecimals === 'number'
+              ? knownDecimals
+              : (() => {
+                  const str = data.tick.quote.toString();
+                  const dot = str.indexOf('.');
+                  return dot === -1 ? 0 : str.length - dot - 1;
+                })();
+
+          const formattedQuote = Number(data.tick.quote).toFixed(decimalPlaces);
+          const lastDigit = parseInt(formattedQuote.slice(-1), 10);
+          const isEven = lastDigit % 2 === 0;
+
+          const newTick: TickData = {
+            epoch: data.tick.epoch,
+            quote: data.tick.quote,
+            digit: lastDigit,
+            type: isEven ? 'E' : 'O',
+          };
+
+          setTickSequence((prev) => [...prev.slice(-49), newTick]);
+        }
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, [isConnected]);
+
+  const subscribeTicks = useCallback(async (symbol: string) => {
+    if (!symbol || !api_base.api) return;
+
+    if (subscriptionIdRef.current) {
+      try {
+        await api_base.api.send({ forget: subscriptionIdRef.current });
+      } catch (err) {
+        // Ignore cleanup error if already forgotten
+      }
+      subscriptionIdRef.current = null;
+    }
+
+    activeSymbolRef.current = symbol;
+    setTickSequence([]);
+
+    try {
+      await api_base.api.send({
+        ticks: symbol,
+        subscribe: 1,
+      });
+    } catch (err) {
+      console.error('Error subscribing to ticks on shared socket:', err);
+    }
+  }, []);
+
+  const trackContract = useCallback(
+    (
+      contractId: number,
+      contractType: string,
+      onSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void
+    ) => {
+      if (!api_base.api) return;
+
+      const sub = api_base.api.onMessage().subscribe(({ data }: any) => {
+        if (data?.msg_type === 'proposal_open_contract' && data.proposal_open_contract?.contract_id === contractId) {
+          const contract = data.proposal_open_contract;
+          const accountID = (api_base.account_info as any)?.loginid;
+
+          transactions.onBotContractEvent({ accountID, ...contract });
+          summary_card.onBotContractEvent({ accountID, ...contract });
+
+          if (contract.is_sold || contract.status !== 'open') {
+            journal.onLogSuccess({
+              log_type: LogTypes.SELL,
+              extra: { sold_for: contract.sell_price } as any,
+            });
+
+            const profit = Number(contract.profit);
+            journal.onLogSuccess({
+              log_type: profit > 0 ? LogTypes.PROFIT : LogTypes.LOST,
+              extra: { currency: contract.currency, profit },
+            });
+
+            onSettled?.({ contract_type: contractType, profit, won: profit > 0 });
+
+            sub.unsubscribe();
+          }
+        }
+      });
+
+      api_base.pushSubscription?.(sub as any);
+
+      (api_base.api
+        .send({
+          proposal_open_contract: 1,
+          contract_id: contractId,
+          subscribe: 1,
+        }) as any as Promise<any>
+      ).catch((err: any) => {
+        console.error('[BulkTrader] Failed to subscribe to contract updates:', err);
+      });
+    },
+    [transactions, summary_card, journal]
+  );
+
+  const executeBulkTrades = useCallback(
+    (
+      mode: TradeExecutionMode,
+      count: number,
+      staticParams: { symbol: string; duration: number },
+      getDynamicParams: () => { contract_type: string; prediction?: number; amount: number },
+      onTradeResult?: (result: { index: number; success: boolean; error?: string }) => void,
+      onContractSettled?: (result: { contract_type: string; profit: number; won: boolean }) => void,
+      sequential: boolean = false,
+      onBatchComplete?: () => void
+    ): (() => void) => {
+      if (!api_base.api || !api_base.is_authorized) {
+        console.error('[BulkTrader] Cannot trade — not connected/authorized to a Deriv account.');
+        onTradeResult?.({ index: -1, success: false, error: 'Not connected to your Deriv account.' });
+        return () => {};
+      }
+
+      const loginIdAtStart = (api_base.account_info as any)?.loginid;
+      const delay = mode === 'FAST' ? 50 : 300;
+      let cancelled = false;
+
+      const isFatalAccountError = (error: any): boolean => {
+        const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase();
+        return (
+          text.includes('turnover limit') ||
+          text.includes('daily limit') ||
+          text.includes('trading limit') ||
+          text.includes('insufficient balance') ||
+          text.includes('self-exclusion') ||
+          text.includes('self exclusion') ||
+          text.includes('exceed your')
+        );
+      };
+
+      const fireOneTrade = async (i: number): Promise<void> => {
+        if (cancelled) return;
+
+        const currentLoginId = (api_base.account_info as any)?.loginid;
+        if (currentLoginId !== loginIdAtStart) {
+          console.warn('[BulkTrader] Skipping trade — active account changed since this run started.');
+          onTradeResult?.({ index: i, success: false, error: 'Account changed — trade skipped for safety.' });
+          return;
+        }
+
+        try {
+          const dynamic = getDynamicParams();
+
+          const req: any = {
+            buy: '1',
+            price: dynamic.amount,
+            parameters: {
+              amount: dynamic.amount,
+              basis: 'stake',
+              contract_type: dynamic.contract_type,
+              currency: 'USD',
+              duration: staticParams.duration,
+              duration_unit: 't',
+              underlying_symbol: staticParams.symbol,
+            },
+          };
+
+          if (dynamic.prediction !== undefined) {
+            req.parameters.barrier = String(dynamic.prediction);
+          }
+
+          console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
+          const response: any = await api_base.api.send(req);
+          console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
+
+          if (cancelled) return;
+
+          if (response?.error) {
+            const fatal = isFatalAccountError(response.error);
+            const baseMsg =
+              response.error.message ||
+              `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
+            const errMsg = fatal ? `${baseMsg} — stopping remaining trades in this batch` : baseMsg;
+            onTradeResult?.({ index: i, success: false, error: errMsg });
+
+            if (fatal) {
+              cancelled = true;
+            }
+          } else {
+            if (response?.buy?.contract_id) {
+              journal.onLogSuccess({
+                log_type: LogTypes.PURCHASE,
+                extra: { transaction_id: response.buy.transaction_id } as any,
+              });
+
+              if (sequential) {
+                await new Promise<void>((resolve) => {
+                  trackContract(response.buy.contract_id, dynamic.contract_type, (settled) => {
+                    onContractSettled?.(settled);
+                    resolve();
+                  });
+                });
+              } else {
+                trackContract(response.buy.contract_id, dynamic.contract_type, onContractSettled);
+              }
+            }
+            onTradeResult?.({ index: i, success: true });
+          }
+        } catch (err: any) {
+          console.error(`[BulkTrader] Trade #${i + 1} failed:`, err);
+          onTradeResult?.({ index: i, success: false, error: err?.message || 'Trade failed (network/unknown error)' });
+        }
+      };
+
+      const timeoutIds: ReturnType<typeof setTimeout>[] = [];
+
+      if (sequential) {
+        (async () => {
+          for (let i = 0; i < count; i++) {
+            if (cancelled) break;
+            await fireOneTrade(i);
+            if (cancelled) break;
+            if (i < count - 1) {
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            }
+          }
+          onBatchComplete?.();
+        })();
+      } else {
+        let completedCount = 0;
+        for (let i = 0; i < count; i++) {
+          const id = setTimeout(async () => {
+            await fireOneTrade(i);
+            completedCount += 1;
+            if (completedCount === count) onBatchComplete?.();
+          }, i * delay);
+          timeoutIds.push(id);
+        }
+      }
+
+      return () => {
+        cancelled = true;
+        timeoutIds.forEach((id) => clearTimeout(id));
+      };
+    },
+    [trackContract, journal]
+  );
+
+  return {
+    isConnected,
+    isAuthorized,
+    accountInfo,
+    tickSequence,
+    subscribeTicks,
+    executeBulkTrades,
+  };
 };
