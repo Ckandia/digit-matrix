@@ -44,6 +44,7 @@ const BulkTrader = () => {
     const [isEnterNow, setIsEnterNow] = useState<boolean>(false);
     const tickSequenceRef = useRef<TickData[]>([]);
     const enterNowRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const signalRef = useRef<TradeSignal | null>(null);
 
     useEffect(() => {
         if (isConnected && MARKET_MAPPING[market]) {
@@ -69,6 +70,7 @@ const BulkTrader = () => {
 
     const applySignal = useCallback((newSignal: TradeSignal | null) => {
         setSignal(newSignal);
+        signalRef.current = newSignal;
         if (newSignal?.digit !== undefined) {
             setPrediction(newSignal.digit);
         }
@@ -76,6 +78,7 @@ const BulkTrader = () => {
 
     useEffect(() => {
         setSignal(null);
+        signalRef.current = null;
         setSignalCountdown(SIGNAL_CYCLE_SECONDS);
         setIsEnterNow(false);
 
@@ -128,7 +131,6 @@ const BulkTrader = () => {
     }, [strategy, market, duration, applySignal]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
-
     const durationConstraint = DURATION_CONSTRAINTS[strategy] ?? DEFAULT_DURATION_CONSTRAINT;
 
     useEffect(() => {
@@ -165,10 +167,16 @@ const BulkTrader = () => {
             completionTimeoutRef.current = null;
         }
 
-        const initialType =
-            button === 'Left' ? pair.left.contract_type :
-            button === 'Right' ? pair.right.contract_type :
-            STRATEGY_MAPPING[strategy];
+        let initialType: string;
+        if (button === 'Left') {
+            initialType = pair.left.contract_type;
+        } else if (button === 'Right') {
+            initialType = pair.right.contract_type;
+        } else {
+            // AI Mode: dynamically pick direction based on signal side, defaulting to Left side
+            const activeSide = signalRef.current?.side;
+            initialType = activeSide === 'right' ? pair.right.contract_type : pair.left.contract_type;
+        }
 
         directionRef.current = initialType;
         runPredictionRef.current = predictionRef.current;
@@ -256,7 +264,7 @@ const BulkTrader = () => {
         }, safetyMs);
 
         setRunningButton(button);
-    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo, logTradeToBackend]);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo]);
 
     const handleToggle = (button: ActionButton) => {
         if (!canTrade) return;
