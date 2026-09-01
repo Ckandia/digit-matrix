@@ -7,6 +7,7 @@ import { TPortfolioPosition, TStores } from '@deriv/stores/types';
 import { TContractInfo } from '../components/summary/summary-card.types';
 import { transaction_elements } from '../constants/transactions';
 import { getStoredItemsByKey, getStoredItemsByUser, setStoredItemsByKey } from '../utils/session-storage';
+import { backendAPI } from '@/services/backend-api';
 import RootStore from './root-store';
 
 type TTransaction = {
@@ -165,6 +166,21 @@ export default class TransactionsStore {
                 type: transaction_elements.CONTRACT,
                 data: contract,
             });
+
+            // 👇 SEND COMPLETED TRADE TO BACK-END DATABASE
+            if (is_completed && current_account) {
+                backendAPI.logTrade({
+                    loginid: current_account,
+                    market: (data as any).underlying || (data as any).symbol || 'unknown',
+                    strategy: 'bot',
+                    contract_type: (data as any).contract_type || '',
+                    stake: Number(contract.buy_price) || 0,
+                    prediction: (data as any).prediction || 0,
+                    profit: Number(contract.profit) || 0,
+                    result: Number(contract.profit) > 0 ? 'win' : 'loss',
+                });
+            }
+            // 👆 END BACKEND LOGGING
         } else {
             // If data belongs to existing contract in memory, update it.
             this.elements[current_account]?.splice(same_contract_index, 1, {
