@@ -7,6 +7,26 @@ export interface AccountInfo {
     currency: string;
 }
 
+// Helper to convert human UI names to Deriv API symbol codes
+const getDerivSymbol = (sym: string) => {
+    if (sym.includes('Vol 10 (1s)')) return '1HZ10V';
+    if (sym.includes('Vol 10') && !sym.includes('1s')) return 'R_10';
+    if (sym.includes('Vol 25 (1s)')) return '1HZ25V';
+    if (sym.includes('Vol 25') && !sym.includes('1s')) return 'R_25';
+    if (sym.includes('Vol 50 (1s)')) return '1HZ50V';
+    if (sym.includes('Vol 50') && !sym.includes('1s')) return 'R_50';
+    if (sym.includes('Vol 75 (1s)')) return '1HZ75V';
+    if (sym.includes('Vol 75') && !sym.includes('1s')) return 'R_75';
+    if (sym.includes('Vol 100 (1s)')) return '1HZ100V';
+    if (sym.includes('Vol 100') && !sym.includes('1s')) return 'R_100';
+    if (sym.includes('Jump 100')) return 'JD100';
+    if (sym.includes('Jump 75')) return 'JD75';
+    if (sym.includes('Jump 50')) return 'JD50';
+    if (sym.includes('Jump 25')) return 'JD25';
+    if (sym.includes('Jump 10')) return 'JD10';
+    return sym; // Fallback to whatever was passed
+};
+
 export const useBulkTrader = () => {
     const [isConnected, setIsConnected] = useState<boolean>(false);
     const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
@@ -16,12 +36,47 @@ export const useBulkTrader = () => {
     const wsRef = useRef<WebSocket | null>(null);
     const tickSequenceRef = useRef<TickData[]>([]);
     const subscribedSymbolRef = useRef<string | null>(null);
+    const pendingSymbolRef = useRef<string | null>(null); // FIX: Caches the symbol if WS isn't ready yet
+    const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
     const safeSetTicks = useCallback((ticks: TickData[]) => {
         const validTicks = Array.isArray(ticks) ? ticks : [];
         tickSequenceRef.current = validTicks;
         setTickSequence(validTicks);
     }, []);
+
+    // 2. Safe symbol subscription
+    const subscribeTicks = useCallback((symbol: string) => {
+        const actualSymbol = getDerivSymbol(symbol);
+
+        // FIX: If socket is not open yet, save it and subscribe once it opens
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            pendingSymbolRef.current = actualSymbol;
+            return;
+        }
+
+        if (subscribedSymbolRef.current === actualSymbol) return;
+
+        // Forget previous tick stream if subscribed
+        if (subscribedSymbolRef.current) {
+            wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
+        }
+
+        subscribedSymbolRef.current = actualSymbol;
+        pendingSymbolRef.current = null;
+        safeSetTicks([]);
+
+        wsRef.current.send(
+            JSON.stringify({
+                ticks_history: actualSymbol,
+                adjust_start_time: 1,
+                count: 50,
+                end: 'latest',
+                style: 'ticks',
+                subscribe: 1,
+            })
+        );
+    }, [safeSetTicks]);
 
     // 1. Initialize and maintain persistent WebSocket connection
     useEffect(() => {
@@ -38,22 +93,40 @@ export const useBulkTrader = () => {
         ws.onopen = () => {
             setIsConnected(true);
             
-            // Check for existing token or session storage if present
-            const token = localStorage.getItem('config.account1') || localStorage.getItem('token');
+            // FIX: Keep-alive ping every 30 seconds to prevent silent disconnects
+            pingIntervalRef.current = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ ping: 1 }));
+            }, 30000);
+
+            // FIX: Better Token Extraction (checks URL params first, then storage)
+            const urlParams = new URLSearchParams(window.location.search);
+            let token = urlParams.get('token1') || localStorage.getItem('config.account1') || localStorage.getItem('token');
+            
             if (token) {
                 try {
                     const parsed = JSON.parse(token);
-                    const authToken = parsed.token || token;
-                    ws.send(JSON.stringify({ authorize: authToken }));
+                    token = parsed.token || token;
                 } catch {
-                    ws.send(JSON.stringify({ authorize: token }));
+                    // Token is just a plain string
                 }
+                ws.send(JSON.stringify({ authorize: token }));
+            }
+
+            // FIX: If UI requested ticks while connecting, fire it now
+            if (pendingSymbolRef.current) {
+                subscribeTicks(pendingSymbolRef.current);
             }
         };
 
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+
+                // FIX: Catch and log Deriv API errors so it's not failing silently
+                if (data.error) {
+                    console.error('[DerivAPI Error]:', data.error.message);
+                    return;
+                }
 
                 if (data.msg_type === 'authorize') {
                     if (data.authorize) {
@@ -105,40 +178,17 @@ export const useBulkTrader = () => {
             setIsConnected(false);
             setIsAuthorized(false);
             wsRef.current = null;
+            if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
         };
 
         return () => {
+            if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.close();
                 wsRef.current = null;
             }
         };
-    }, [safeSetTicks]);
-
-    // 2. Safe symbol subscription
-    const subscribeTicks = useCallback((symbol: string) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        if (subscribedSymbolRef.current === symbol) return;
-
-        // Forget previous tick stream if subscribed
-        if (subscribedSymbolRef.current) {
-            wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
-        }
-
-        subscribedSymbolRef.current = symbol;
-        safeSetTicks([]);
-
-        wsRef.current.send(
-            JSON.stringify({
-                ticks_history: symbol,
-                adjust_start_time: 1,
-                count: 50,
-                end: 'latest',
-                style: 'ticks',
-                subscribe: 1,
-            })
-        );
-    }, [safeSetTicks]);
+    }, [safeSetTicks, subscribeTicks]);
 
     // 3. Trade execution handler
     const executeBulkTrades = useCallback(
@@ -163,7 +213,7 @@ export const useBulkTrader = () => {
                     amount: dynamic.amount,
                     basis: 'stake',
                     currency: accountInfo?.currency || 'USD',
-                    symbol: params.symbol,
+                    symbol: getDerivSymbol(params.symbol), // FIX: apply symbol mapping here too
                     duration: params.duration,
                     duration_unit: 't',
                     contract_type: dynamic.contract_type,
