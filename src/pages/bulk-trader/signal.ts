@@ -13,22 +13,23 @@ export interface TickItem {
 }
 
 /**
- * Required by index.tsx for signal evaluation and countdown timers
+ * Required by index.tsx for UI analysis & countdown timers
  */
 export const computeSignal = (
   strategy: string,
-  ticks: number[] | TickItem[],
+  ticks: number[] | TickItem[] | undefined | null,
   prediction?: number,
   duration: number = 1
 ): { signal: string; confidence: number } => {
-  if (!ticks || ticks.length === 0) {
+  const safeTicks = Array.isArray(ticks) ? ticks : [];
+  if (safeTicks.length === 0) {
     return { signal: 'NEUTRAL', confidence: 0 };
   }
 
-  const digits = ticks.map(t => (typeof t === 'number' ? t : t.digit));
-  const lastDigit = digits[digits.length - 1];
+  const digits = safeTicks.map(t => (typeof t === 'number' ? t : t?.digit ?? 0));
+  const lastDigit = digits[digits.length - 1] ?? 0;
 
-  switch (strategy.toUpperCase()) {
+  switch ((strategy || '').toUpperCase()) {
     case 'EVEN':
     case 'DIGITEVEN':
       return { signal: 'DIGITEVEN', confidence: 80 };
@@ -51,26 +52,33 @@ export const computeSignal = (
 };
 
 /**
- * Strict Entry Validator for execution
+ * Strict Entry Validator for Trade Execution with defensive undefined/null checks
  */
 export const shouldExecuteTrade = (
   config: ManualTradeConfig,
-  ticks: TickItem[]
+  ticks: TickItem[] | undefined | null
 ): { allowed: boolean; reason?: string } => {
-  if (ticks.length < 15) {
-    return { allowed: false, reason: 'Insufficient tick data' };
+  const safeTicks = Array.isArray(ticks) ? ticks : [];
+
+  if (safeTicks.length < 15) {
+    return { allowed: false, reason: 'Waiting for tick data...' };
   }
 
-  const lastIndex = ticks.length - 1;
-  const currentTick = ticks[lastIndex];
-  const prevTick = ticks[lastIndex - 1];
+  const lastIndex = safeTicks.length - 1;
+  const currentTick = safeTicks[lastIndex];
+  const prevTick = safeTicks[lastIndex - 1];
 
+  if (!currentTick || !prevTick) {
+    return { allowed: false, reason: 'Invalid tick frame' };
+  }
+
+  // RULE 1: EVEN / ODD STABILITY FILTER (Skip edge digits 0 and 9)
   if (config.contractType === 'DIGITEVEN' || config.contractType === 'DIGITODD') {
     if (currentTick.digit === 0 || currentTick.digit === 9) {
       return { allowed: false, reason: `Edge digit (${currentTick.digit}) blocked` };
     }
 
-    const last3Digits = ticks.slice(-3).map(t => t.digit);
+    const last3Digits = (safeTicks || []).slice(-3).map(t => t?.digit ?? 0);
     if (config.contractType === 'DIGITEVEN') {
       const allOdd = last3Digits.every(d => d % 2 !== 0);
       if (!allOdd) return { allowed: false, reason: 'Waiting for 3 consecutive ODD ticks' };
@@ -80,13 +88,15 @@ export const shouldExecuteTrade = (
     }
   }
 
+  // RULE 2: DIFFERS / MATCHES COLD DIGIT FILTER
   if (config.contractType === 'DIGITDIFF' && config.targetDigit !== undefined) {
-    const recentDigits = ticks.slice(-10).map(t => t.digit);
+    const recentDigits = (safeTicks || []).slice(-10).map(t => t?.digit ?? 0);
     if (recentDigits.includes(config.targetDigit)) {
       return { allowed: false, reason: `Target digit ${config.targetDigit} appeared recently` };
     }
   }
 
+  // RULE 3: RISE / FALL ZERO-SPREAD FILTER
   if (config.contractType === 'CALL' || config.contractType === 'PUT') {
     const priceDiff = Math.abs(currentTick.quote - prevTick.quote);
     if (priceDiff === 0) {
