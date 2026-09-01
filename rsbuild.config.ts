@@ -48,6 +48,8 @@ export default defineConfig({
         GD_CLIENT_ID: JSON.stringify(process.env.GD_CLIENT_ID),
         GD_APP_ID: JSON.stringify(process.env.GD_APP_ID),
         GD_API_KEY: JSON.stringify(process.env.GD_API_KEY),
+        // 👇 NEW: URL of your back-end API
+        BACKEND_URL: JSON.stringify(process.env.BACKEND_URL ?? 'http://localhost:10000'),
       },
     },
     alias: {
@@ -62,6 +64,8 @@ export default defineConfig({
       '@/utils': path.resolve(__dirname, './src/utils'),
       '@/constants': path.resolve(__dirname, './src/constants'),
       '@/stores': path.resolve(__dirname, './src/stores'),
+      // 👇 NEW: so @/services/backend-api resolves correctly
+      '@/services': path.resolve(__dirname, './src/services'),
     },
   },
   output: {
