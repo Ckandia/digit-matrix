@@ -148,6 +148,13 @@ declare global {
 
     const gapi: Window['gapi'];
     const google: Window['google'];
+
+    // Back-end API environment variable
+    namespace NodeJS {
+    interface ProcessEnv {
+      BACKEND_URL?: string;
+    }
+  }
 }
 
 export {};
