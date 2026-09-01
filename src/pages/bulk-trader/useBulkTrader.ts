@@ -1,4 +1,3 @@
-// useBulkTrader.ts
 import { useRef, useCallback } from 'react';
 import { shouldExecuteTrade, ManualTradeConfig, TickItem } from './signal';
 
@@ -6,28 +5,29 @@ export const useBulkTrader = (ws: WebSocket | null, isTradingActive: boolean) =>
   const ticksRef = useRef<TickItem[]>([]);
   const isExecutingRef = useRef<boolean>(false);
 
-  // Called directly on every incoming WebSocket message
   const handleIncomingTick = useCallback((tickData: { quote: number; symbol: string }, config: ManualTradeConfig) => {
     if (!isTradingActive || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-    // 1. Parse Last Digit
+    // GUARD: ensure tickData and quote exist before parsing
+    if (!tickData || typeof tickData.quote !== 'number') return;
+
     const quoteStr = tickData.quote.toString();
     const lastDigit = parseInt(quoteStr.slice(-1), 10);
     const newTick: TickItem = { quote: tickData.quote, digit: lastDigit };
 
-    // 2. Append to internal tick array
-    ticksRef.current = [...ticksRef.current.slice(-49), newTick];
+    // FIX: guard .slice() — ensure ticksRef.current is always treated as array
+    const currentTicks = Array.isArray(ticksRef.current) ? ticksRef.current : [];
+    ticksRef.current = [...currentTicks.slice(-49), newTick];
 
-    // Prevent duplicate simultaneous trades
     if (isExecutingRef.current) return;
 
-    // 3. Check Manual Config against Strict Rules
-    const validation = shouldExecuteTrade(config, ticksRef.current);
+    // FIX: pass guarded copy to signal engine
+    const tickSnapshot = Array.isArray(ticksRef.current) ? ticksRef.current : [];
+    const validation = shouldExecuteTrade(config, tickSnapshot);
 
     if (validation.allowed) {
       isExecutingRef.current = true;
 
-      // 4. Send Instant Purchase Payload directly over WebSocket
       const proposalReq = {
         buy: 1,
         price: config.stake,
@@ -45,7 +45,6 @@ export const useBulkTrader = (ws: WebSocket | null, isTradingActive: boolean) =>
 
       ws.send(JSON.stringify(proposalReq));
 
-      // Reset execution lock after 1.5 seconds to prevent spamming
       setTimeout(() => {
         isExecutingRef.current = false;
       }, 1500);
