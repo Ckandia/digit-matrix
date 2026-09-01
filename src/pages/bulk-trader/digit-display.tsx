@@ -2,40 +2,60 @@ import React from 'react';
 import { TickData } from './types';
 
 interface DigitDisplayProps {
-    ticks?: TickData[];
-    mode: 'even_odd' | 'digit';
+    ticks: TickData[];
+    mode?: 'even_odd' | 'digit';
 }
 
-const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks = [], mode }) => {
-    // Defensive check ensuring ticks is never undefined
-    const safeTicks = Array.isArray(ticks) ? ticks : [];
+const DigitDisplay: React.FC<DigitDisplayProps> = ({ ticks, mode = 'even_odd' }) => {
+    const recentTicks = ticks.slice(-50);
+    
+    const counts = new Array(10).fill(0);
+    recentTicks.forEach(t => {
+        if (t.digit >= 0 && t.digit <= 9) {
+            counts[t.digit]++;
+        }
+    });
 
-    if (safeTicks.length === 0) {
-        return <div className="digit-display-empty">Waiting for tick data…</div>;
-    }
-
-    const recentTicks = safeTicks.slice(-10);
+    const total = recentTicks.length || 1;
 
     return (
-        <div className="digit-display-container">
-            <div className="ticks-list">
-                {recentTicks.map((tick, index) => {
-                    const quoteStr = tick?.quote?.toString() || '0';
-                    const lastDigit = parseInt(quoteStr.slice(-1), 10);
-                    const isEven = lastDigit % 2 === 0;
+        <>
+            {/* Top Heatmap Circles */}
+            <div className="digit-heatmap-container">
+                {counts.map((count, digit) => {
+                    const percentage = ((count / total) * 100).toFixed(2);
+                    const isLatest = recentTicks.length > 0 && recentTicks[recentTicks.length - 1].digit === digit;
 
                     return (
-                        <div key={tick.epoch || index} className={`tick-pill ${isEven ? 'even' : 'odd'}`}>
-                            {mode === 'even_odd' ? (
-                                <span>{isEven ? 'E' : 'O'}</span>
-                            ) : (
-                                <span>{isNaN(lastDigit) ? '-' : lastDigit}</span>
-                            )}
+                        <div 
+                            key={digit} 
+                            className={`digit-circle digit-${digit} ${isLatest ? 'active-latest' : ''}`}
+                        >
+                            <span className="num">{digit}</span>
+                            <span className="pct">{percentage}%</span>
                         </div>
                     );
                 })}
             </div>
-        </div>
+
+            {/* Sequence Grid — shows E/O for Even/Odd strategies, actual digit values (0-9) for Matches/Differs/Over/Under */}
+            <div className="sequence-grid-wrapper">
+                <div className="grid-container">
+                    {recentTicks.map((tick, index) => (
+                        <span 
+                            key={`${tick.epoch}-${index}`} 
+                            className={
+                                mode === 'even_odd'
+                                    ? `seq-cell ${tick.type === 'E' ? 'E' : 'O'}`
+                                    : `seq-cell seq-digit seq-digit-${tick.digit}`
+                            }
+                        >
+                            {mode === 'even_odd' ? tick.type : tick.digit}
+                        </span>
+                    ))}
+                </div>
+            </div>
+        </>
     );
 };
 
