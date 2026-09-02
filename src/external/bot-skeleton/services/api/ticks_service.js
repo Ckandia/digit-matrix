@@ -201,17 +201,23 @@ export default class TicksService {
             const subscription = api_base.api.onMessage().subscribe(({ data }) => {
                 if (data.msg_type === 'tick') {
                     const { tick } = data;
+                    // SAFETY: During reconnection tick can be undefined — don't crash
+                    if (!tick || !tick.symbol) return;
                     const { symbol, id } = tick;
                     if (this.ticks.has(symbol)) {
                         this.subscriptions = this.subscriptions.setIn(['tick', symbol], id);
                         this.updateTicksAndCallListeners(symbol, updateTicks(this.ticks.get(symbol), parseTick(tick)));
-                        // 👇 FORWARD TICK TO YOUR BACK-END DATABASE
-                        backendAPI.sendTick(symbol, +tick.quote);
+                        // Forward tick to back-end database
+                        if (tick.quote != null) {
+                            backendAPI.sendTick(symbol, +tick.quote);
+                        }
                     }
                 }
 
                 if (data.msg_type === 'ohlc') {
                     const { ohlc } = data;
+                    // SAFETY: Same guard for candles
+                    if (!ohlc || !ohlc.symbol) return;
                     const { symbol, granularity, id } = ohlc;
                     if (this.candles.hasIn([symbol, Number(granularity)])) {
                         this.subscriptions = this.subscriptions.setIn(['ohlc', symbol, Number(granularity)], id);
