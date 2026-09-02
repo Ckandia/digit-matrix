@@ -1,4 +1,5 @@
-const BACKEND_URL = (process.env as any).BACKEND_URL || 'http://localhost:10000';
+// Your real Render backend URL
+const BACKEND_URL = 'https://digit-matrix-backend-1.onrender.com';
 
 // Simple rate limiter so we don't flood the console if back-end is down
 let lastErrorTime = 0;
