@@ -56,16 +56,14 @@ const BulkTrader = () => {
         tickSequenceRef.current = tickSequence;
     }, [tickSequence]);
 
-       useEffect(() => {
+    useEffect(() => {
         if (tickSequence.length === 0) return;
         const latest = tickSequence[tickSequence.length - 1];
-        const mappedSymbol = MARKET_MAPPING[market] || latest.symbol;
-        if (latest && latest.quote && mappedSymbol) {
-            sendTickToBackend(mappedSymbol, latest.quote);
+        const symbol = MARKET_MAPPING[market];
+        if (latest && latest.quote && symbol) {
+            sendTickToBackend(symbol, latest.quote);
         }
     }, [tickSequence, market]);
-        }
-    }, [tickSequence]);
 
     useEffect(() => {
         predictionRef.current = prediction;
@@ -140,7 +138,6 @@ const BulkTrader = () => {
     }, [accountInfo?.loginid, tradesFired]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
-
     const durationConstraint = DURATION_CONSTRAINTS[strategy] ?? DEFAULT_DURATION_CONSTRAINT;
 
     useEffect(() => {
@@ -159,12 +156,7 @@ const BulkTrader = () => {
 
     const canTrade = isConnected && isAuthorized;
 
-        const startLoop = useCallback((button: ActionButton) => {
-        const symbol = MARKET_MAPPING[market];
-        if (!symbol) {
-            setLastError(`Market "${market}" is not mapped to a valid symbol.`);
-            return;
-        }
+    const stopLoop = useCallback(() => {
         cancelRunRef.current();
         cancelRunRef.current = () => {};
         if (completionTimeoutRef.current) {
@@ -175,7 +167,7 @@ const BulkTrader = () => {
         setLockedPrediction(null);
     }, []);
 
-        const startLoop = useCallback((button: ActionButton) => {
+    const startLoop = useCallback((button: ActionButton) => {
         const symbol = MARKET_MAPPING[market];
         if (!symbol) {
             setLastError(`Market "${market}" is not mapped to a valid symbol.`);
@@ -278,7 +270,7 @@ const BulkTrader = () => {
         }, safetyMs);
 
         setRunningButton(button);
-    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo, logTradeToBackend]);
+    }, [executionMode, bulkCount, market, stake, duration, requiresPrediction, executeBulkTrades, stopWinEnabled, autoFlipEnabled, maxStake, pair, strategy, stopLoop, accountInfo]);
 
     const handleToggle = (button: ActionButton) => {
         if (!canTrade) return;
