@@ -1,4 +1,4 @@
-const API_URL = 'https://digit-matrix-backend.onrender.com';
+const API_URL = 'https://digit-matrix-backend-1.onrender.com'; // TODO: confirm this matches your live Render URL
 
 export const fetchAnalysis = async (marketSymbol: string) => {
     try {
@@ -33,6 +33,24 @@ export const sendTickToBackend = async (symbol: string, quote: number) => {
         });
     } catch (e) {
         // silent fail
+    }
+};
+
+export interface SessionStats {
+    total_trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    net_pnl: number;
+}
+
+export const fetchSessionStats = async (loginid: string): Promise<SessionStats | null> => {
+    try {
+        const res = await fetch(`${API_URL}/api/stats/session/${encodeURIComponent(loginid)}`);
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        return null;
     }
 };
 
