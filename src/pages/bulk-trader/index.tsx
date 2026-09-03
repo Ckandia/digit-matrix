@@ -56,11 +56,14 @@ const BulkTrader = () => {
         tickSequenceRef.current = tickSequence;
     }, [tickSequence]);
 
-    useEffect(() => {
+       useEffect(() => {
         if (tickSequence.length === 0) return;
         const latest = tickSequence[tickSequence.length - 1];
-        if (latest && latest.quote && latest.symbol) {
-            sendTickToBackend(latest.symbol, latest.quote);
+        const mappedSymbol = MARKET_MAPPING[market] || latest.symbol;
+        if (latest && latest.quote && mappedSymbol) {
+            sendTickToBackend(mappedSymbol, latest.quote);
+        }
+    }, [tickSequence, market]);
         }
     }, [tickSequence]);
 
@@ -156,7 +159,12 @@ const BulkTrader = () => {
 
     const canTrade = isConnected && isAuthorized;
 
-    const stopLoop = useCallback(() => {
+        const startLoop = useCallback((button: ActionButton) => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) {
+            setLastError(`Market "${market}" is not mapped to a valid symbol.`);
+            return;
+        }
         cancelRunRef.current();
         cancelRunRef.current = () => {};
         if (completionTimeoutRef.current) {
@@ -167,7 +175,12 @@ const BulkTrader = () => {
         setLockedPrediction(null);
     }, []);
 
-    const startLoop = useCallback((button: ActionButton) => {
+        const startLoop = useCallback((button: ActionButton) => {
+        const symbol = MARKET_MAPPING[market];
+        if (!symbol) {
+            setLastError(`Market "${market}" is not mapped to a valid symbol.`);
+            return;
+        }
         cancelRunRef.current();
         if (completionTimeoutRef.current) {
             clearTimeout(completionTimeoutRef.current);
