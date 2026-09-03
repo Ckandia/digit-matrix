@@ -1,4 +1,3 @@
-import { getSocketURL } from '@/components/shared';
 import DerivAPIBasic from '@deriv/deriv-api/dist/DerivAPIBasic';
 import APIMiddleware from './api-middleware';
 
@@ -8,6 +7,22 @@ import APIMiddleware from './api-middleware';
 let derivApiInstance = null;
 let derivApiPromise = null;
 let currentWebSocketURL = null;
+
+const getAppId = () => {
+    // Read the app_id baked in at build time by rsbuild.config.ts
+    try {
+        const envId = process.env.NEXT_PUBLIC_DERIV_APP_ID;
+        if (envId && envId.length > 5) return envId;
+    } catch (e) { /* no-op */ }
+    // Fallback for local development
+    return '1089';
+};
+
+const buildSocketURL = () => {
+    const app_id = getAppId();
+    // Authoritative Deriv production endpoint
+    return `wss://ws.derivws.com/websockets/v3?app_id=${app_id}`;
+};
 
 /**
  * Clears the singleton instance (useful for logout or forced reconnection)
@@ -27,45 +42,33 @@ export const clearDerivApiInstance = () => {
 
 /**
  * Generates a Deriv API instance with WebSocket connection using singleton pattern
- * Prevents multiple WebSocket connections by reusing existing instance
- * Now supports async WebSocket URL fetching with authenticated flow
- * @param {boolean} forceNew - Force creation of new instance (default: false)
- * @returns Promise with DerivAPIBasic instance
  */
 export const generateDerivApiInstance = async (forceNew = false) => {
-    // If forcing new instance, clear existing one
     if (forceNew) {
         console.log('[DerivAPI] Forcing new instance creation');
         clearDerivApiInstance();
     }
 
-    // If there's already an instance, check its state
     if (derivApiInstance) {
         const readyState = derivApiInstance.connection?.readyState;
-        // Return existing instance if it's connecting or open
         if (readyState === WebSocket.CONNECTING || readyState === WebSocket.OPEN) {
             console.log('[DerivAPI] Reusing existing instance (state:', readyState, ')');
             return derivApiInstance;
         } else {
-            // Connection is closed or closing, clear it
             console.log('[DerivAPI] Existing instance not usable (state:', readyState, '), creating new');
             clearDerivApiInstance();
         }
     }
 
-    // If there's already a creation in progress, return that promise
     if (derivApiPromise) {
         console.log('[DerivAPI] Reusing existing creation promise');
         return derivApiPromise;
     }
 
-    // Create new instance
     derivApiPromise = (async () => {
         try {
-            // Await the async getSocketURL() function
-            const wsURL = await getSocketURL();
+            const wsURL = buildSocketURL();
 
-            // Check if URL changed (account switch scenario)
             if (currentWebSocketURL && currentWebSocketURL !== wsURL) {
                 console.log('[DerivAPI] WebSocket URL changed, clearing old instance');
                 clearDerivApiInstance();
@@ -80,10 +83,8 @@ export const generateDerivApiInstance = async (forceNew = false) => {
                 middleware: new APIMiddleware({}),
             });
 
-            // Store the instance immediately (don't wait for connection)
             derivApiInstance = deriv_api;
 
-            // Set up close handler to clear instance
             deriv_socket.addEventListener('close', () => {
                 console.log('[DerivAPI] WebSocket connection closed');
                 if (derivApiInstance === deriv_api) {
@@ -92,7 +93,6 @@ export const generateDerivApiInstance = async (forceNew = false) => {
                 }
             });
 
-            // Log when connection opens
             deriv_socket.addEventListener('open', () => {
                 console.log('[DerivAPI] WebSocket connection established');
             });
@@ -108,7 +108,6 @@ export const generateDerivApiInstance = async (forceNew = false) => {
             derivApiInstance = null;
             throw error;
         } finally {
-            // Clear the promise after a short delay to allow reuse during concurrent calls
             setTimeout(() => {
                 derivApiPromise = null;
             }, 100);
@@ -132,10 +131,10 @@ export const V2GetActiveAccountId = () => {
 
 export const getToken = () => {
     const active_loginid = getLoginId();
-    const client_accounts = JSON.parse(localStorage.getItem('accountsList')) ?? undefined;
-    const active_account = (client_accounts && client_accounts[active_loginid]) || {};
+    const client_accounts = JSON.parse(localStorage.getItem('accountsList') || '{}');
+    const active_account = client_accounts?.[active_loginid] || {};
     return {
-        token: active_account ?? undefined,
-        account_id: active_loginid ?? undefined,
+        token: active_account.token || active_account || undefined,
+        account_id: active_loginid || undefined,
     };
 };
