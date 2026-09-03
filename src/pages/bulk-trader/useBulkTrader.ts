@@ -31,7 +31,6 @@ export const useBulkTrader = () => {
       setIsAuthorized(authorized);
       setAccountInfo(authorized ? (api_base.account_info as BulkTraderAccountInfo) : null);
 
-      // Handle automatic reconnection when WebSocket drops
       if (!hasConnection && api_base.api) {
         if (!reconnectTimeoutRef.current) {
           const baseDelay = 1000;
@@ -51,7 +50,6 @@ export const useBulkTrader = () => {
           }, delay);
         }
       } else if (hasConnection) {
-        // Reset retry counter upon successful connection restore
         retryCountRef.current = 0;
         if (reconnectTimeoutRef.current) {
           clearTimeout(reconnectTimeoutRef.current);
@@ -71,11 +69,9 @@ export const useBulkTrader = () => {
     };
   }, []);
 
-  // Re-subscribe to live ticks whenever connection restores or market symbol updates
   useEffect(() => {
-    if (!isConnected) return;
+    if (!isConnected || !api_base.api) return;
 
-    // Auto resubscribe active symbol on socket reconnect
     if (activeSymbolRef.current && api_base.api) {
       api_base.api.send({
         ticks: activeSymbolRef.current,
@@ -112,6 +108,7 @@ export const useBulkTrader = () => {
             quote: data.tick.quote,
             digit: lastDigit,
             type: isEven ? 'E' : 'O',
+            symbol: data.tick.symbol,
           };
 
           setTickSequence((prev) => [...prev.slice(-49), newTick]);
@@ -126,12 +123,16 @@ export const useBulkTrader = () => {
 
   const subscribeTicks = useCallback(async (symbol: string) => {
     if (!symbol || !api_base.api) return;
+    if (api_base.api.connection?.readyState !== WebSocket.OPEN) {
+      console.warn('[BulkTrader] Socket not open, skipping tick subscription');
+      return;
+    }
 
     if (subscriptionIdRef.current) {
       try {
         await api_base.api.send({ forget: subscriptionIdRef.current });
       } catch (err) {
-        // Ignore cleanup error if already forgotten
+        // ignore
       }
       subscriptionIdRef.current = null;
     }
@@ -140,10 +141,13 @@ export const useBulkTrader = () => {
     setTickSequence([]);
 
     try {
-      await api_base.api.send({
+      const res: any = await api_base.api.send({
         ticks: symbol,
         subscribe: 1,
       });
+      if (res?.subscription?.id) {
+        subscriptionIdRef.current = res.subscription.id;
+      }
     } catch (err) {
       console.error('Error subscribing to ticks on shared socket:', err);
     }
@@ -246,41 +250,56 @@ export const useBulkTrader = () => {
         try {
           const dynamic = getDynamicParams();
 
-          const req: any = {
-            buy: '1',
-            price: dynamic.amount,
-            parameters: {
-              amount: dynamic.amount,
-              basis: 'stake',
-              contract_type: dynamic.contract_type,
-              currency: 'USD',
-              duration: staticParams.duration,
-              duration_unit: 't',
-              underlying_symbol: staticParams.symbol,
-            },
+          // 1) Request proposal first
+          const proposalReq: any = {
+            proposal: 1,
+            amount: dynamic.amount,
+            basis: 'stake',
+            contract_type: dynamic.contract_type,
+            currency: 'USD',
+            duration: staticParams.duration,
+            duration_unit: 't',
+            symbol: staticParams.symbol,
           };
 
           if (dynamic.prediction !== undefined) {
-            req.parameters.barrier = String(dynamic.prediction);
+            proposalReq.barrier = String(dynamic.prediction);
           }
 
-          console.log(`[BulkTrader] Firing trade #${i + 1}`, req);
-          const response: any = await api_base.api.send(req);
+          const proposalRes: any = await api_base.api.send(proposalReq);
+          if (proposalRes?.error) {
+            const fatal = isFatalAccountError(proposalRes.error);
+            const baseMsg = proposalRes.error.message || `Proposal failed${proposalRes.error.code ? ` (${proposalRes.error.code})` : ''}`;
+            onTradeResult?.({ index: i, success: false, error: fatal ? `${baseMsg} — stopping batch` : baseMsg });
+            if (fatal) cancelled = true;
+            return;
+          }
+
+          const proposalId = proposalRes?.proposal?.id;
+          const askPrice = proposalRes?.proposal?.ask_price;
+          if (!proposalId || askPrice == null) {
+            onTradeResult?.({ index: i, success: false, error: 'Invalid proposal response from Deriv' });
+            return;
+          }
+
+          // 2) Buy using proposal id
+          const buyReq = {
+            buy: proposalId,
+            price: askPrice,
+          };
+
+          console.log(`[BulkTrader] Firing trade #${i + 1}`, { proposal_id: proposalId, price: askPrice, contract_type: dynamic.contract_type });
+          const response: any = await api_base.api.send(buyReq);
           console.log(`[BulkTrader] Trade #${i + 1} response:`, response);
 
           if (cancelled) return;
 
           if (response?.error) {
             const fatal = isFatalAccountError(response.error);
-            const baseMsg =
-              response.error.message ||
-              `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
+            const baseMsg = response.error.message || `Trade failed${response.error.code ? ` (${response.error.code})` : ''}`;
             const errMsg = fatal ? `${baseMsg} — stopping remaining trades in this batch` : baseMsg;
             onTradeResult?.({ index: i, success: false, error: errMsg });
-
-            if (fatal) {
-              cancelled = true;
-            }
+            if (fatal) cancelled = true;
           } else {
             if (response?.buy?.contract_id) {
               journal.onLogSuccess({
