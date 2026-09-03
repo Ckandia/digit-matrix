@@ -3,7 +3,7 @@ import { useBulkTrader } from './useBulkTrader';
 import DigitDisplay from './digit-display';
 import { DEFAULT_DURATION_CONSTRAINT, DURATION_CONSTRAINTS, MARKET_MAPPING, STRATEGY_MAPPING, STRATEGY_PAIR_MAPPING, TickData, TradeExecutionMode } from './types';
 import { computeSignal, TradeSignal } from './signal';
-import { logTradeToBackend, sendTickToBackend } from './api';
+import { logTradeToBackend, sendTickToBackend, fetchSessionStats, SessionStats } from './api';
 import './bulk-trader.scss';
 
 type ActionButton = 'Left' | 'AI' | 'Right';
@@ -27,6 +27,7 @@ const BulkTrader = () => {
     const [stopWinEnabled, setStopWinEnabled] = useState<boolean>(false);
     const [maxStake, setMaxStake] = useState<number>(5);
     const [lockedPrediction, setLockedPrediction] = useState<number | null>(null);
+    const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
 
     const { isConnected, isAuthorized, accountInfo, tickSequence, subscribeTicks, executeBulkTrades } = useBulkTrader();
 
@@ -126,6 +127,14 @@ const BulkTrader = () => {
             }
         };
     }, [strategy, market, duration, applySignal]);
+
+    useEffect(() => {
+        if (!accountInfo?.loginid) return;
+        const load = () => fetchSessionStats(accountInfo.loginid!).then(setSessionStats);
+        load();
+        const interval = setInterval(load, 5000);
+        return () => clearInterval(interval);
+    }, [accountInfo?.loginid, tradesFired]);
 
     const requiresPrediction = ['Matches', 'Differs', 'Over', 'Under'].includes(strategy);
 
@@ -498,6 +507,12 @@ const BulkTrader = () => {
                         <span>Idle</span>
                     )}
                 </div>
+                {sessionStats && sessionStats.total_trades > 0 && (
+                    <div className={`stats-pill ${sessionStats.net_pnl >= 0 ? 'positive' : 'negative'}`}>
+                        <span>{sessionStats.total_trades} trades · {sessionStats.win_rate}% win</span>
+                        <strong>{sessionStats.net_pnl >= 0 ? '+' : ''}{sessionStats.net_pnl.toFixed(2)}</strong>
+                    </div>
+                )}
                 {lastError && <div className="error-pill">{lastError}</div>}
                 <div className="execution-pill">
                     <span>Execution <strong>{executionMode}</strong></span>
