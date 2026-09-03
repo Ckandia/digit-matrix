@@ -1,76 +1,21 @@
-const API_URL = 'https://digit-matrix-backend-1.onrender.com'; // TODO: confirm this matches your live Render URL
+// Bulk Trader's own names for the shared backend client in ../../services/backend-api.
+// Kept as a thin wrapper (not a second copy of the URL/fetch logic) so this
+// file and services/backend-api.ts can never drift out of sync again.
+import { backendAPI, SessionStats, AnalysisResult, TickRecord, TradeLogPayload } from '@/services/backend-api';
 
-export const fetchAnalysis = async (marketSymbol: string) => {
-    try {
-        const res = await fetch(`${API_URL}/api/analysis/${encodeURIComponent(marketSymbol)}?lookback=1000`);
-        if (!res.ok) return null;
-        const data = await res.json();
-        if (data.error) return null;
-        return data;
-    } catch (e) {
-        return null;
-    }
-};
+export type { SessionStats, AnalysisResult, TickRecord };
 
-export const fetchRecentTicks = async (marketSymbol: string, limit: number = 20) => {
-    try {
-        const res = await fetch(`${API_URL}/api/ticks/${encodeURIComponent(marketSymbol)}?limit=${limit}`);
-        if (!res.ok) return null;
-        const data = await res.json();
-        if (!Array.isArray(data)) return null;
-        return data;
-    } catch (e) {
-        return null;
-    }
-};
+export const fetchAnalysis = (marketSymbol: string): Promise<AnalysisResult | null> =>
+    backendAPI.getAnalysis(marketSymbol);
 
-export const sendTickToBackend = async (symbol: string, quote: number) => {
-    try {
-        await fetch(`${API_URL}/api/ticks`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbol, quote }),
-        });
-    } catch (e) {
-        // silent fail
-    }
-};
+export const fetchRecentTicks = (marketSymbol: string, limit = 20): Promise<TickRecord[] | null> =>
+    backendAPI.getTicks(marketSymbol, limit);
 
-export interface SessionStats {
-    total_trades: number;
-    wins: number;
-    losses: number;
-    win_rate: number;
-    net_pnl: number;
-}
+export const sendTickToBackend = (symbol: string, quote: number): Promise<void> =>
+    backendAPI.sendTick(symbol, quote);
 
-export const fetchSessionStats = async (loginid: string): Promise<SessionStats | null> => {
-    try {
-        const res = await fetch(`${API_URL}/api/stats/session/${encodeURIComponent(loginid)}`);
-        if (!res.ok) return null;
-        return await res.json();
-    } catch (e) {
-        return null;
-    }
-};
+export const fetchSessionStats = (loginid: string): Promise<SessionStats | null> =>
+    backendAPI.getSessionStats(loginid);
 
-export const logTradeToBackend = async (trade: {
-    loginid?: string;
-    market: string;
-    strategy: string;
-    contract_type: string;
-    stake: number;
-    prediction?: number;
-    profit: number;
-    result: string;
-}) => {
-    try {
-        await fetch(`${API_URL}/api/trades`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(trade),
-        });
-    } catch (e) {
-        console.log('Failed to log trade');
-    }
-};
+export const logTradeToBackend = (trade: TradeLogPayload): Promise<void> =>
+    backendAPI.logTrade(trade);
