@@ -472,6 +472,23 @@
       font-weight: 600;
     }
 
+    .stats-pill {
+      padding: 8px 16px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #94a3b8;
+      background: #161623;
+      border: 1px solid #232338;
+
+      strong { font-weight: 700; }
+
+      &.positive strong { color: #4ade80; }
+      &.negative strong { color: #f87171; }
+    }
+
     .execution-pill {
       background: #e6f4f1;
       padding: 8px 16px;
