@@ -64,6 +64,7 @@ class APIBase {
     active_symbols_promise: Promise<any[] | undefined> | null = null;
     common_store: CommonStore | undefined;
     reconnection_attempts: number = 0;
+    reconnect_timeout: ReturnType<typeof setTimeout> | null = null;
 
     private readonly ACTIVE_SYMBOLS_TIMEOUT_MS = 15000;
     private readonly ENRICHMENT_TIMEOUT_MS = 10000;
@@ -215,8 +216,15 @@ class APIBase {
         }
     }
 
+    // --- FIXED: added exponential backoff + a guard so we never stack
+    // multiple pending reconnect attempts on top of each other. Previously
+    // this fired an instant, un-delayed reconnect every single time the
+    // connection dropped, which could hammer Deriv's servers and trigger
+    // rate-limiting that looks identical to an invalid-credentials error.
     reconnectIfNotConnected = () => {
         if (this.api?.connection?.readyState && this.api?.connection?.readyState > 1) {
+            if (this.reconnect_timeout) return; // a reconnect is already scheduled — don't stack more
+
             this.reconnection_attempts += 1;
 
             if (this.reconnection_attempts >= this.MAX_RECONNECTION_ATTEMPTS) {
@@ -230,7 +238,11 @@ class APIBase {
                 localStorage.removeItem('clientAccounts');
             }
 
-            this.init(true);
+            const delay = Math.min(1000 * Math.pow(2, this.reconnection_attempts), 30000);
+            this.reconnect_timeout = setTimeout(() => {
+                this.reconnect_timeout = null;
+                this.init(true);
+            }, delay);
         }
     };
 
