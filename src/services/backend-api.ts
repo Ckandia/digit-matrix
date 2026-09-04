@@ -1,7 +1,5 @@
-// Single source of truth for every call to digit-matrix-backend.
-// If the backend URL ever changes (new Render service, custom domain, etc.),
-// this is the ONLY place it needs to be updated.
-const BACKEND_URL = 'https://digit-matrix-backend-1.onrender.com';
+const BACKEND_URL = (process.env as any).BACKEND_URL || 'https://digit-matrix-backend-1.onrender.com';
+const BACKEND_API_KEY = (process.env as any).BACKEND_API_KEY || '';
 
 export interface SessionStats {
     total_trades: number;
@@ -42,7 +40,6 @@ export interface TradeLogPayload {
     result: string;
 }
 
-// Simple rate limiter so we don't flood the console if the backend is down
 let lastErrorTime = 0;
 let errorCount = 0;
 
@@ -54,22 +51,26 @@ function shouldLogError(): boolean {
         return true;
     }
     errorCount++;
-    // Log only the first error in each 30-second window
     return errorCount === 1;
 }
 
 class BackendAPI {
+    private _headers(includeContentType = true): Record<string, string> {
+        const h: Record<string, string> = {};
+        if (includeContentType) h['Content-Type'] = 'application/json';
+        if (BACKEND_API_KEY) h['X-API-Key'] = BACKEND_API_KEY;
+        return h;
+    }
+
     async sendTick(symbol: string, quote: number): Promise<void> {
         try {
             await fetch(`${BACKEND_URL}/api/ticks`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this._headers(),
                 body: JSON.stringify({ symbol, quote }),
             });
         } catch (e) {
-            if (shouldLogError()) {
-                console.error('[Digit Matrix Backend] Tick error (back-end down?):', e);
-            }
+            if (shouldLogError()) console.error('[Backend] Tick error:', e);
         }
     }
 
@@ -78,12 +79,9 @@ class BackendAPI {
             const res = await fetch(`${BACKEND_URL}/api/ticks/${encodeURIComponent(symbol)}?limit=${limit}`);
             if (!res.ok) return null;
             const data = await res.json();
-            if (!Array.isArray(data)) return null;
-            return data;
+            return Array.isArray(data) ? data : null;
         } catch (e) {
-            if (shouldLogError()) {
-                console.error('[Digit Matrix Backend] Get ticks error:', e);
-            }
+            if (shouldLogError()) console.error('[Backend] Get ticks error:', e);
             return null;
         }
     }
@@ -93,12 +91,9 @@ class BackendAPI {
             const res = await fetch(`${BACKEND_URL}/api/analysis/${encodeURIComponent(symbol)}?lookback=${lookback}`);
             if (!res.ok) return null;
             const data = await res.json();
-            if (data.error) return null;
-            return data;
+            return data.error ? null : data;
         } catch (e) {
-            if (shouldLogError()) {
-                console.error('[Digit Matrix Backend] Analysis error:', e);
-            }
+            if (shouldLogError()) console.error('[Backend] Analysis error:', e);
             return null;
         }
     }
@@ -107,13 +102,11 @@ class BackendAPI {
         try {
             await fetch(`${BACKEND_URL}/api/trades`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this._headers(),
                 body: JSON.stringify(trade),
             });
         } catch (e) {
-            if (shouldLogError()) {
-                console.error('[Digit Matrix Backend] Trade log error:', e);
-            }
+            if (shouldLogError()) console.error('[Backend] Trade log error:', e);
         }
     }
 
@@ -123,9 +116,7 @@ class BackendAPI {
             if (!res.ok) return [];
             return await res.json();
         } catch (e) {
-            if (shouldLogError()) {
-                console.error('[Digit Matrix Backend] Get trades error:', e);
-            }
+            if (shouldLogError()) console.error('[Backend] Get trades error:', e);
             return [];
         }
     }
@@ -136,11 +127,45 @@ class BackendAPI {
             if (!res.ok) return null;
             return await res.json();
         } catch (e) {
-            if (shouldLogError()) {
-                console.error('[Digit Matrix Backend] Stats error:', e);
-            }
+            if (shouldLogError()) console.error('[Backend] Stats error:', e);
             return null;
         }
+    }
+
+    async startAutotrader(accessToken: string, loginid: string, environment = 'production'): Promise<any> {
+        const res = await fetch(`${BACKEND_URL}/api/autotrader/start`, {
+            method: 'POST',
+            headers: this._headers(),
+            body: JSON.stringify({ access_token: accessToken, loginid, environment }),
+        });
+        if (!res.ok) throw new Error(`startAutotrader failed: ${res.status}`);
+        return res.json();
+    }
+
+    async stopAutotrader(): Promise<any> {
+        const res = await fetch(`${BACKEND_URL}/api/autotrader/stop`, {
+            method: 'POST',
+            headers: this._headers(),
+        });
+        if (!res.ok) throw new Error(`stopAutotrader failed: ${res.status}`);
+        return res.json();
+    }
+
+    async resumeAutotrader(): Promise<any> {
+        const res = await fetch(`${BACKEND_URL}/api/autotrader/resume`, {
+            method: 'POST',
+            headers: this._headers(),
+        });
+        if (!res.ok) throw new Error(`resumeAutotrader failed: ${res.status}`);
+        return res.json();
+    }
+
+    async getAutotraderStatus(): Promise<any> {
+        const res = await fetch(`${BACKEND_URL}/api/autotrader/status`, {
+            headers: this._headers(false),
+        });
+        if (!res.ok) throw new Error(`getAutotraderStatus failed: ${res.status}`);
+        return res.json();
     }
 }
 
