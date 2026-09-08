@@ -11,16 +11,17 @@ let currentWebSocketURL = null;
 const DEFAULT_LOCAL_APP_ID = '1089';
 
 const getAppId = () => {
-    // Read the app_id baked in at build time by rsbuild.config.ts
+    // This is the LEGACY WebSocket API (wss://ws.derivws.com/websockets/v3),
+    // which is a separate system from the new OAuth client_id used for login.
+    // Deliberately reads a DIFFERENT env var than the OAuth flow — do not
+    // point this at NEXT_PUBLIC_DERIV_APP_ID (that's the new-system client_id
+    // and is not a valid legacy app_id).
     try {
-        const envId = process.env.NEXT_PUBLIC_DERIV_APP_ID?.trim();
-        // Guard against an empty string, an accidental '1089' leaking through
-        // from a stale .env file, and overly-short/placeholder values.
-        if (envId && envId.length > 5 && envId !== DEFAULT_LOCAL_APP_ID) return envId;
+        const envId = process.env.NEXT_PUBLIC_DERIV_LEGACY_APP_ID?.trim();
+        if (envId) return envId;
     } catch (e) { /* no-op */ }
-    // Fallback for local development only — should never be hit in a real
-    // deployment once NEXT_PUBLIC_DERIV_APP_ID is set correctly in .env.production.
-    console.warn('[DerivAPI] NEXT_PUBLIC_DERIV_APP_ID not set or invalid — falling back to demo app_id 1089');
+    // 1089 is Deriv's public legacy test app_id — safe default for the
+    // WebSocket connection (market data, symbols, ticks).
     return DEFAULT_LOCAL_APP_ID;
 };
 
