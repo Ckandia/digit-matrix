@@ -8,14 +8,20 @@ let derivApiInstance = null;
 let derivApiPromise = null;
 let currentWebSocketURL = null;
 
+const DEFAULT_LOCAL_APP_ID = '1089';
+
 const getAppId = () => {
     // Read the app_id baked in at build time by rsbuild.config.ts
     try {
-        const envId = process.env.NEXT_PUBLIC_DERIV_APP_ID;
-        if (envId && envId.length > 5) return envId;
+        const envId = process.env.NEXT_PUBLIC_DERIV_APP_ID?.trim();
+        // Guard against an empty string, an accidental '1089' leaking through
+        // from a stale .env file, and overly-short/placeholder values.
+        if (envId && envId.length > 5 && envId !== DEFAULT_LOCAL_APP_ID) return envId;
     } catch (e) { /* no-op */ }
-    // Fallback for local development
-    return '1089';
+    // Fallback for local development only — should never be hit in a real
+    // deployment once NEXT_PUBLIC_DERIV_APP_ID is set correctly in .env.production.
+    console.warn('[DerivAPI] NEXT_PUBLIC_DERIV_APP_ID not set or invalid — falling back to demo app_id 1089');
+    return DEFAULT_LOCAL_APP_ID;
 };
 
 const buildSocketURL = () => {
