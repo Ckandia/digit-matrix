@@ -140,8 +140,29 @@ export const getToken = () => {
     const active_loginid = getLoginId();
     const client_accounts = JSON.parse(localStorage.getItem('accountsList') || '{}');
     const active_account = client_accounts?.[active_loginid] || {};
+    let token = active_account.token || active_account || undefined;
+
+    // ── FIX: fallback to the OAuth access token. accountsList is only
+    // populated right after a fresh login; on reload, or if the callback
+    // failed before writing it, the stored OAuth token (auth_info) is the
+    // source of truth. Without this, token was always undefined and the
+    // trading socket never authorized ("No token available for authorization"). ──
+    if (!token) {
+        try {
+            const auth_info = JSON.parse(localStorage.getItem('auth_info') || 'null');
+            if (
+                auth_info?.access_token &&
+                (!auth_info.expires_at || Date.now() < auth_info.expires_at * 1000)
+            ) {
+                token = auth_info.access_token;
+            }
+        } catch (e) {
+            /* ignore — malformed auth_info just means no fallback */
+        }
+    }
+
     return {
-        token: active_account.token || active_account || undefined,
+        token,
         account_id: active_loginid || undefined,
     };
 };
