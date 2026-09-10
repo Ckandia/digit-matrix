@@ -1,13 +1,20 @@
 import { lazy, Suspense } from 'react';
 import React from 'react';
 import { createBrowserRouter, createRoutesFromElements, Route, RouterProvider } from 'react-router-dom';
-import { cleanupUrl, handleOAuthCallback } from '@/external/deriv-core';
+import {
+    cleanupUrl,
+    handleOAuthCallback,
+    setAccountType,
+    setActiveLoginId,
+    storeDerivAccounts,
+} from '@/external/deriv-core';
 import ChunkLoader from '@/components/loader/chunk-loader';
 import LocalStorageSyncWrapper from '@/components/localStorage-sync-wrapper';
 import RoutePromptDialog from '@/components/route-prompt-dialog';
 import { useAccountSwitching } from '@/hooks/useAccountSwitching';
 import { useLanguageFromURL } from '@/hooks/useLanguageFromURL';
 import { StoreProvider } from '@/hooks/useStore';
+import { isDemoAccount } from '@/utils/account-helpers';
 import { isPreviewMode, PREVIEW_BASE_PATH } from '@/utils/is-preview-mode';
 import { localize, TranslationProvider } from '@deriv-com/translations';
 import CoreStoreProvider from './CoreStoreProvider';
@@ -95,12 +102,34 @@ function App() {
                 const accounts = await DerivWSAccountsService.fetchAccountsList(authInfo.access_token);
 
                 if (accounts && accounts.length > 0) {
+                    // Session copy — used by api_base to build the account list
                     DerivWSAccountsService.storeAccounts(accounts);
+
+                    // ── FIX 1: also store in localStorage for deriv-core readers ──
+                    storeDerivAccounts(accounts);
+
+                    // ── FIX 2 (root cause): populate the legacy keys the WebSocket
+                    // layer reads. getToken() in bot-skeleton/services/api/appId.js
+                    // authorizes the trading socket with accountsList[loginid].token.
+                    // These keys were NEVER written after PKCE login, so authorize()
+                    // received no token and the app stayed logged out. ──
+                    const accountsList: Record<string, string> = {};
+                    const clientAccounts: Record<string, unknown> = {};
+                    accounts.forEach(account => {
+                        accountsList[account.account_id] = authInfo.access_token;
+                        clientAccounts[account.account_id] = {
+                            loginid: account.account_id,
+                            token: authInfo.access_token,
+                            currency: account.currency,
+                            account_type: account.account_type,
+                        };
+                    });
+                    localStorage.setItem('accountsList', JSON.stringify(accountsList));
+                    localStorage.setItem('clientAccounts', JSON.stringify(clientAccounts));
+
                     const firstAccount = accounts[0];
-                    localStorage.setItem('active_loginid', firstAccount.account_id);
-                    const isDemo =
-                        firstAccount.account_id.startsWith('VRT') || firstAccount.account_id.startsWith('VRTC');
-                    localStorage.setItem('account_type', isDemo ? 'demo' : 'real');
+                    setActiveLoginId(firstAccount.account_id);
+                    setAccountType(isDemoAccount(firstAccount.account_id) ? 'demo' : 'real');
 
                     const { api_base } = await import('@/external/bot-skeleton');
                     await api_base.init(true);
@@ -108,6 +137,8 @@ function App() {
                     console.error('No accounts returned after authentication');
                 }
             } catch (error) {
+                // FIX 3: don't fail silently — the URL is cleaned in `finally`,
+                // so without a visible error the user can't tell login broke.
                 console.error('OAuth callback error:', error);
             } finally {
                 cleanupUrl(window.location.origin);
