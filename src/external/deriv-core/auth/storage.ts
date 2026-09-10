@@ -7,118 +7,123 @@ const DERIV_ACCOUNTS_KEY = 'deriv_accounts';
 const ACTIVE_LOGINID_KEY = 'active_loginid';
 const ACCOUNT_TYPE_KEY = 'account_type';
 
-const TOKEN_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+// FIX: split the TTLs. The CSRF `state` param only needs to survive the
+// redirect, but the PKCE code verifier must live as long as the user takes
+// on Deriv's login page (email verification, 2FA, signup) — 10 minutes was
+// too short and caused "Code verifier expired or missing" logins failures.
+const CSRF_TOKEN_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+const CODE_VERIFIER_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 
 // --- CSRF Token ---
 
 export function storeCSRFToken(token: string): void {
-  const stored: StoredCSRFToken = { value: token, createdAt: Date.now() };
-  sessionStorage.setItem(CSRF_TOKEN_KEY, JSON.stringify(stored));
+    const stored: StoredCSRFToken = { value: token, createdAt: Date.now() };
+    sessionStorage.setItem(CSRF_TOKEN_KEY, JSON.stringify(stored));
 }
 
 export function getCSRFToken(): string | null {
-  const raw = sessionStorage.getItem(CSRF_TOKEN_KEY);
-  if (!raw) return null;
+    const raw = sessionStorage.getItem(CSRF_TOKEN_KEY);
+    if (!raw) return null;
 
-  const stored: StoredCSRFToken = JSON.parse(raw);
-  if (Date.now() - stored.createdAt > TOKEN_MAX_AGE_MS) {
-    clearCSRFToken();
-    return null;
-  }
-  return stored.value;
+    const stored: StoredCSRFToken = JSON.parse(raw);
+    if (Date.now() - stored.createdAt > CSRF_TOKEN_MAX_AGE_MS) {
+        clearCSRFToken();
+        return null;
+    }
+    return stored.value;
 }
 
 export function clearCSRFToken(): void {
-  sessionStorage.removeItem(CSRF_TOKEN_KEY);
+    sessionStorage.removeItem(CSRF_TOKEN_KEY);
 }
 
 // --- PKCE Code Verifier ---
 
 export function storeCodeVerifier(verifier: string): void {
-  const stored: StoredCodeVerifier = { value: verifier, createdAt: Date.now() };
-  sessionStorage.setItem(CODE_VERIFIER_KEY, JSON.stringify(stored));
+    const stored: StoredCodeVerifier = { value: verifier, createdAt: Date.now() };
+    sessionStorage.setItem(CODE_VERIFIER_KEY, JSON.stringify(stored));
 }
 
 export function getCodeVerifier(): string | null {
-  const raw = sessionStorage.getItem(CODE_VERIFIER_KEY);
-  if (!raw) return null;
+    const raw = sessionStorage.getItem(CODE_VERIFIER_KEY);
+    if (!raw) return null;
 
-  const stored: StoredCodeVerifier = JSON.parse(raw);
-  if (Date.now() - stored.createdAt > TOKEN_MAX_AGE_MS) {
-    clearCodeVerifier();
-    return null;
-  }
-  return stored.value;
+    const stored: StoredCodeVerifier = JSON.parse(raw);
+    if (Date.now() - stored.createdAt > CODE_VERIFIER_MAX_AGE_MS) {
+        clearCodeVerifier();
+        return null;
+    }
+    return stored.value;
 }
 
 export function clearCodeVerifier(): void {
-  sessionStorage.removeItem(CODE_VERIFIER_KEY);
+    sessionStorage.removeItem(CODE_VERIFIER_KEY);
 }
 
 // --- Auth Info ---
 
 export function storeAuthInfo(authInfo: AuthInfo): void {
-  localStorage.setItem(AUTH_INFO_KEY, JSON.stringify(authInfo));
+    localStorage.setItem(AUTH_INFO_KEY, JSON.stringify(authInfo));
 }
 
 export function getAuthInfo(): AuthInfo | null {
-  const raw = localStorage.getItem(AUTH_INFO_KEY);
-  if (!raw) return null;
+    const raw = localStorage.getItem(AUTH_INFO_KEY);
+    if (!raw) return null;
 
-  const authInfo: AuthInfo = JSON.parse(raw);
-  if (authInfo.expires_at && Date.now() > authInfo.expires_at * 1000) {
-    return null; // Token expired
-  }
-  return authInfo;
+    const authInfo: AuthInfo = JSON.parse(raw);
+    if (authInfo.expires_at && Date.now() > authInfo.expires_at * 1000) {
+        return null; // Token expired
+    }
+    return authInfo;
 }
 
 export function clearAuthInfo(): void {
-  localStorage.removeItem(AUTH_INFO_KEY);
+    localStorage.removeItem(AUTH_INFO_KEY);
 }
 
 // --- Deriv Accounts ---
 
 export function storeDerivAccounts(accounts: DerivAccount[]): void {
-  localStorage.setItem(DERIV_ACCOUNTS_KEY, JSON.stringify(accounts));
+    localStorage.setItem(DERIV_ACCOUNTS_KEY, JSON.stringify(accounts));
 }
 
 export function getDerivAccounts(): DerivAccount[] | null {
-  const raw = localStorage.getItem(DERIV_ACCOUNTS_KEY);
-  if (!raw) return null;
-  return JSON.parse(raw);
+    const raw = localStorage.getItem(DERIV_ACCOUNTS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
 }
 
 export function clearDerivAccounts(): void {
-  localStorage.removeItem(DERIV_ACCOUNTS_KEY);
+    localStorage.removeItem(DERIV_ACCOUNTS_KEY);
 }
 
 // --- Active Login ID (localStorage) ---
 
 export function setActiveLoginId(loginId: string): void {
-  localStorage.setItem(ACTIVE_LOGINID_KEY, loginId);
+    localStorage.setItem(ACTIVE_LOGINID_KEY, loginId);
 }
 
 export function getActiveLoginId(): string | null {
-  return localStorage.getItem(ACTIVE_LOGINID_KEY);
+    return localStorage.getItem(ACTIVE_LOGINID_KEY);
 }
 
 // --- Account Type (localStorage) ---
 
 export function setAccountType(type: 'demo' | 'real'): void {
-  localStorage.setItem(ACCOUNT_TYPE_KEY, type);
+    localStorage.setItem(ACCOUNT_TYPE_KEY, type);
 }
 
 export function getAccountType(): string | null {
-  return localStorage.getItem(ACCOUNT_TYPE_KEY);
+    return localStorage.getItem(ACCOUNT_TYPE_KEY);
 }
 
 // --- Clear All Auth Data ---
 
 export function clearAllAuthData(): void {
-  clearCSRFToken();
-  clearCodeVerifier();
-  clearAuthInfo();
-  clearDerivAccounts();
-  localStorage.removeItem(ACTIVE_LOGINID_KEY);
-  localStorage.removeItem(ACCOUNT_TYPE_KEY);
+    clearCSRFToken();
+    clearCodeVerifier();
+    clearAuthInfo();
+    clearDerivAccounts();
+    localStorage.removeItem(ACTIVE_LOGINID_KEY);
+    localStorage.removeItem(ACCOUNT_TYPE_KEY);
 }
