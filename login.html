@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Digit Matrix - Login</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #0e0e1e; color: #fff;
+         display: flex; flex-direction: column; align-items: center;
+         justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+  .card { background: #181828; padding: 40px; border-radius: 16px;
+          max-width: 520px; width: 100%; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  h1 { margin-top: 0; font-size: 24px; }
+  p { color: #aab; line-height: 1.5; }
+  button { background: #ff444f; color: #fff; border: none; padding: 14px 28px;
+           font-size: 16px; border-radius: 8px; cursor: pointer; width: 100%; }
+  button:hover { background: #e03540; }
+  pre { background: #101020; padding: 16px; border-radius: 8px; overflow: auto;
+        max-height: 300px; color: #8f8; font-size: 12px; }
+  .ok { color: #4caf50; } .err { color: #ff444f; }
+  a { color: #ff444f; }
+</style>
+<base target="_blank">
+</head>
+<body>
+<div class="card">
+  <h1>Digit Matrix Login</h1>
+  <p>Click the button below to log in with your Deriv account using the
+     <b>new Deriv API system</b>.</p>
+  <button id="loginBtn" onclick="login()">Login with Deriv</button>
+  <p id="msg"></p>
+  <h2 style="font-size:16px;display:none" id="accTitle">Your accounts:</h2>
+  <pre id="out"></pre>
+  <p style="font-size:12px">Back to the <a href="/">main app</a></p>
+</div>
+
+<script>
+// Your Render backend address (same one already in your .env.production)
+const BACKEND = "https://digit-matrix-backend.onrender.com";
+
+const msg = document.getElementById("msg");
+const out = document.getElementById("out");
+
+function show(text, isErr) {
+  msg.innerHTML = text;
+  msg.className = isErr ? "err" : "ok";
+}
+
+async function login() {
+  show("Preparing login...", false);
+  try {
+    const r = await fetch(BACKEND + "/api/auth/login-url");
+    const d = await r.json();
+    if (!d.url) throw new Error("Backend did not return a login URL");
+    window.location.href = d.url;   // send the user to Deriv to log in
+  } catch (e) {
+    show("Login failed to start: " + e.message, true);
+  }
+}
+
+// When Deriv sends the user back, the page URL contains ?code=...&state=...
+async function handleCallback() {
+  const p = new URLSearchParams(window.location.search);
+  if (!p.get("code")) return;
+
+  show("Finishing login...", false);
+  try {
+    const r = await fetch(
+      BACKEND + "/api/auth/callback?code=" + encodeURIComponent(p.get("code")) +
+      "&state=" + encodeURIComponent(p.get("state"))
+    );
+    const d = await r.json();
+    if (d.error || d.detail) throw new Error(d.error_description || d.detail || JSON.stringify(d));
+
+    // Login worked! Show the token info.
+    window.history.replaceState({}, "", window.location.pathname); // clean the URL
+    show("✅ Login successful! Your access token (valid for " + d.expires_in + " seconds):", false);
+    out.textContent = JSON.stringify(d, null, 2);
+    localStorage.setItem("deriv_access_token", d.access_token);
+
+    // Prove it works: ask the NEW Deriv API for your trading accounts
+    const acc = await fetch(BACKEND + "/api/auth/accounts", {
+      headers: { "Authorization": "Bearer " + d.access_token }
+    });
+    const accData = await acc.json();
+    document.getElementById("accTitle").style.display = "block";
+    out.textContent += "\n\nAccounts:\n" + JSON.stringify(accData, null, 2);
+  } catch (e) {
+    show("❌ " + e.message, true);
+  }
+}
+
+handleCallback();
+</script>
+</body>
+</html>
